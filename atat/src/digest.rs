@@ -69,6 +69,7 @@ pub struct AtDigester<P: Parser> {
     custom_success: fn(&[u8]) -> Result<(&[u8], usize), ParseError>,
     custom_error: fn(&[u8]) -> Result<(&[u8], usize), ParseError>,
     custom_prompt: fn(&[u8]) -> Result<(u8, usize), ParseError>,
+    response_in_flight: bool,
 }
 
 impl<P: Parser> AtDigester<P> {
@@ -79,6 +80,7 @@ impl<P: Parser> AtDigester<P> {
             custom_success: |_| Err(ParseError::NoMatch),
             custom_error: |_| Err(ParseError::NoMatch),
             custom_prompt: |_| Err(ParseError::NoMatch),
+            response_in_flight: false,
         }
     }
 
@@ -119,7 +121,18 @@ impl<P: Parser> Digester for AtDigester<P> {
         let buf = parser::trim_start_ascii_space(input);
         let space_bytes = input.len() - buf.len();
         let (buf, space_and_echo_bytes) = match nom::combinator::opt(parser::echo)(buf) {
-            Ok((buf, echo)) => (buf, space_bytes + echo.unwrap_or_default().len()),
+            Ok((buf, echo)) => {
+                if let Some(e) = echo {
+                    let is_cmd_echo =
+                        parser::take_until_including::<_, _, nom::error::Error<_>>("AT+")(e)
+                            .map(|(a, _)| a.len() > 0)
+                            .unwrap_or_default();
+                    if is_cmd_echo {
+                        self.response_in_flight = true;
+                    }
+                }
+                (buf, space_bytes + echo.unwrap_or_default().len())
+            }
             Err(nom::Err::Incomplete(_)) => return (DigestResult::None, 0),
             Err(_) => panic!("NOM ERROR - opt(echo)"),
         };
@@ -128,10 +141,12 @@ impl<P: Parser> Digester for AtDigester<P> {
         let incomplete = (DigestResult::None, space_and_echo_bytes);
 
         // 2. Match for URC's
-        match P::parse(buf) {
-            Ok((urc, len)) => return (DigestResult::Urc(urc), len + space_and_echo_bytes),
-            Err(ParseError::Incomplete) => return incomplete,
-            _ => {}
+        if !self.response_in_flight {
+            match P::parse(buf) {
+                Ok((urc, len)) => return (DigestResult::Urc(urc), len + space_and_echo_bytes),
+                Err(ParseError::Incomplete) => return incomplete,
+                _ => {}
+            }
         }
 
         // 3. Parse for success responses
@@ -149,7 +164,10 @@ impl<P: Parser> Digester for AtDigester<P> {
 
         // Generic success replies
         match parser::success_response(buf) {
-            Ok((_, (result, len))) => return (result, len + space_and_echo_bytes),
+            Ok((_, (result, len))) => {
+                self.response_in_flight = false;
+                return (result, len + space_and_echo_bytes);
+            }
             Err(nom::Err::Incomplete(_)) => return incomplete,
             _ => {}
         }
@@ -509,7 +527,11 @@ mod test {
 
     impl Parser for UrcTestParser {
         fn parse(buf: &[u8]) -> Result<(&[u8], usize), ParseError> {
-            let (_, r) = nom::branch::alt((urc_helper("+UUSORD"), urc_helper("+CIEV")))(buf)?;
+            let (_, r) = nom::branch::alt((
+                urc_helper("+UUSORD"),
+                urc_helper("+CIEV"),
+                urc_helper("+CGREG"),
+            ))(buf)?;
 
             Ok(r)
         }
@@ -802,6 +824,44 @@ mod test {
         buf.rotate_left(bytes);
         buf.truncate(buf.len() - bytes);
 
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn urc_vs_response_kaputt() {
+        let mut digester = AtDigester::<UrcTestParser>::new();
+        let mut buf = heapless::Vec::<u8, TEST_RX_BUF_LEN>::new();
+
+        buf.extend_from_slice(b"AT+CGREG?\r\n+CGREG: 0,5\r\nOK\r\n\r\n+CGREG: 5\r\n")
+            .unwrap();
+        println!("{:?} start", LossyStr(&buf));
+        let (res, bytes) = digester.digest(&buf);
+        match res {
+            DigestResult::Urc(x) => println!("{:?} first digest URC", LossyStr(x)),
+            DigestResult::Response(Ok(x)) => println!("{:?} first digest RESPONSE", LossyStr(x)),
+            DigestResult::Prompt(x) => println!("{:?} first digest PROMPT", x),
+            _ => {}
+        }
+        assert_eq!(
+            (res, bytes),
+            (DigestResult::Response(Ok(b"+CGREG: 0,5")), 28)
+        );
+        buf.rotate_left(bytes);
+        buf.truncate(buf.len() - bytes);
+        println!("{:?} continue", LossyStr(&buf));
+        assert_eq!(&buf, b"\r\n+CGREG: 5\r\n");
+
+        let (res, bytes) = digester.digest(&buf);
+        match res {
+            DigestResult::Urc(x) => println!("{:?} first digest URC", LossyStr(x)),
+            DigestResult::Response(Ok(x)) => println!("{:?} first digest RESPONSE", LossyStr(x)),
+            DigestResult::Prompt(x) => println!("{:?} first digest PROMPT", x),
+            _ => {}
+        }
+
+        assert_eq!((res, bytes), (DigestResult::Urc(b"+CGREG: 5"), 13));
+        buf.rotate_left(bytes);
+        buf.truncate(buf.len() - bytes);
         assert!(buf.is_empty());
     }
 
