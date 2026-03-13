@@ -36,12 +36,10 @@ pub struct GetWifiMac;
 
 /// Quectel send data in prompt mode +QISEND
 #[derive(Clone, AtatCmd)]
-#[at_cmd("+QISEND", NoResponse, timeout_ms = 5000, expects_prompt = true)]
+#[at_cmd("+QISEND", NoResponse, timeout_ms = 5000)]
 pub struct SendSocketData<'a> {
     #[at_arg(position = 0)]
     pub connect_id: u8,
-    #[at_arg(position = 1)]
-    pub send_length: usize,
-    #[at_data]
+    #[at_data(position = 1)]
     pub data: &'a [u8],
 }

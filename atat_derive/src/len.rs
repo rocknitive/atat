@@ -133,7 +133,7 @@ pub fn atat_len(input: TokenStream) -> TokenStream {
 
     let variants: Vec<_> = variants
         .into_iter()
-        .filter(|field| !field.attrs.at_data)
+        .filter(|field| field.attrs.at_data.is_none())
         .collect();
     let n_fields = variants.len();
 

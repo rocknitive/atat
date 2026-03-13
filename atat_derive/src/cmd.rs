@@ -35,14 +35,18 @@ pub fn atat_cmd(input: TokenStream) -> TokenStream {
 
     let cmd_variants: Vec<_> = variants
         .iter()
-        .filter(|field| !field.attrs.at_data)
+        .filter(|field| field.attrs.at_data.is_none())
         .cloned()
         .collect();
     let data_variants: Vec<_> = variants
         .iter()
-        .filter(|field| field.attrs.at_data)
+        .filter(|field| field.attrs.at_data.is_some())
         .cloned()
         .collect();
+
+    let data_variant = data_variants.first();
+    let inferred_prompt = data_variant.is_some();
+    let effective_prompt = expects_prompt || inferred_prompt;
 
     if data_variants.len() > 1 {
         return syn::Error::new(Span::call_site(), "only one #[at_data] field is supported")
@@ -50,25 +54,7 @@ pub fn atat_cmd(input: TokenStream) -> TokenStream {
             .into();
     }
 
-    if expects_prompt && data_variants.is_empty() {
-        return syn::Error::new(
-            Span::call_site(),
-            "#[at_cmd(..., expects_prompt = true)] requires one #[at_data] field",
-        )
-        .to_compile_error()
-        .into();
-    }
-
-    if !expects_prompt && !data_variants.is_empty() {
-        return syn::Error::new(
-            Span::call_site(),
-            "#[at_data] requires #[at_cmd(..., expects_prompt = true)]",
-        )
-        .to_compile_error()
-        .into();
-    }
-
-    if expects_prompt && matches!(response_code, Some(false)) {
+    if effective_prompt && matches!(response_code, Some(false)) {
         return syn::Error::new(
             Span::call_site(),
             "expects_prompt = true requires response_code to remain enabled",
@@ -77,7 +63,9 @@ pub fn atat_cmd(input: TokenStream) -> TokenStream {
         .into();
     }
 
-    let n_fields = cmd_variants.len();
+    let data_position =
+        data_variant.and_then(|field| field.attrs.at_data.as_ref().map(|data| data.position));
+    let n_fields = cmd_variants.len() + usize::from(data_position.is_some());
 
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
@@ -126,7 +114,7 @@ pub fn atat_cmd(input: TokenStream) -> TokenStream {
         None => quote! {},
     };
 
-    let expects_prompt = if expects_prompt {
+    let expects_prompt = if effective_prompt {
         quote! {
             const EXPECTS_PROMPT: bool = true;
         }
@@ -139,17 +127,13 @@ pub fn atat_cmd(input: TokenStream) -> TokenStream {
         cmd_len += 1;
     }
 
-    let (field_names, field_names_str): (Vec<_>, Vec<_>) = cmd_variants
-        .iter()
-        .map(|f| {
-            let ident = f.ident.clone().unwrap();
-            (ident.clone(), ident.to_string())
-        })
-        .unzip();
-
     let init_len = n_fields.checked_sub(1).unwrap_or(n_fields);
-    let unescaped_struct_len = crate::len::struct_len(cmd_variants.clone(), init_len, false);
-    let escaped_struct_len = crate::len::struct_len(cmd_variants, init_len, true);
+    let mut unescaped_struct_len = crate::len::struct_len(cmd_variants.clone(), init_len, false);
+    let mut escaped_struct_len = crate::len::struct_len(cmd_variants.clone(), init_len, true);
+    if data_position.is_some() {
+        unescaped_struct_len = quote! { #unescaped_struct_len + <usize as atat::AtatLen>::LEN };
+        escaped_struct_len = quote! { #escaped_struct_len + <usize as atat::AtatLen>::ESCAPED_LEN };
+    }
 
     let max_len_struct = if escape_strings {
         &escaped_struct_len
@@ -159,7 +143,53 @@ pub fn atat_cmd(input: TokenStream) -> TokenStream {
 
     let ident_len = format_ident!("ATAT_{}_LEN", ident.to_string().to_uppercase());
 
-    let payload = if let Some(data_field) = data_variants.first() {
+    let serialized_fields: Vec<_> = cmd_variants
+        .iter()
+        .map(|field| {
+            let field_name = field.ident.clone().unwrap();
+            let field_name_str = field_name.to_string();
+            let position = field
+                .attrs
+                .at_arg
+                .as_ref()
+                .and_then(|arg| arg.position)
+                .unwrap_or(usize::MAX);
+            (
+                position,
+                quote! {
+                    atat::serde_at::serde::ser::SerializeStruct::serialize_field(
+                        &mut serde_state,
+                        #field_name_str,
+                        &self.#field_name,
+                    )?;
+                },
+            )
+        })
+        .collect();
+
+    let mut serialized_fields = serialized_fields;
+    if let Some(data_field) = data_variant {
+        let field_name = data_field.ident.clone().unwrap();
+        let position = data_field.attrs.at_data.as_ref().unwrap().position;
+        serialized_fields.push((
+            position,
+            quote! {
+                let at_data_len = self.#field_name.as_ref().len();
+                atat::serde_at::serde::ser::SerializeStruct::serialize_field(
+                    &mut serde_state,
+                    stringify!(#field_name),
+                    &at_data_len,
+                )?;
+            },
+        ));
+    }
+    serialized_fields.sort_by_key(|(position, _)| *position);
+    let serialized_fields: Vec<_> = serialized_fields
+        .into_iter()
+        .map(|(_, tokens)| tokens)
+        .collect();
+
+    let payload = if let Some(data_field) = data_variant {
         let field_name = data_field.ident.clone().unwrap();
         quote! {
             #[inline]
@@ -258,13 +288,7 @@ pub fn atat_cmd(input: TokenStream) -> TokenStream {
                     #n_fields,
                 )?;
 
-                #(
-                    atat::serde_at::serde::ser::SerializeStruct::serialize_field(
-                        &mut serde_state,
-                        #field_names_str,
-                        &self.#field_names,
-                    )?;
-                )*
+                #(#serialized_fields)*
 
                 atat::serde_at::serde::ser::SerializeStruct::end(serde_state)
             }

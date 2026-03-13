@@ -112,10 +112,10 @@ mod tests {
     use std::convert::TryFrom;
 
     use crate as atat;
-    use atat::{derive::AtatLen, AtatCmd};
+    use atat::{AtatCmd, derive::AtatLen};
     use atat_derive::{AtatCmd, AtatEnum, AtatResp};
     use heapless::{String, Vec};
-    use serde_at::{from_str, to_string, HexStr, SerializeOptions};
+    use serde_at::{HexStr, SerializeOptions, from_str, to_string};
 
     macro_rules! assert_not_impl {
         ($x:ty, $($t:path),+ $(,)*) => {

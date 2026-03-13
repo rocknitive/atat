@@ -21,7 +21,7 @@ pub use serde;
 #[doc(inline)]
 pub use self::de::{from_slice, from_str, hex_str::HexStr};
 #[doc(inline)]
-pub use self::ser::{to_slice, SerializeOptions};
+pub use self::ser::{SerializeOptions, to_slice};
 
 #[cfg(feature = "heapless")]
 pub use self::ser::{to_string, to_vec};

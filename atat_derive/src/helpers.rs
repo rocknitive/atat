@@ -1,7 +1,7 @@
 use crate::parse::Variant;
 use proc_macro2::{Literal, Span, TokenStream};
 use quote::{format_ident, quote};
-use syn::{parse_quote, GenericParam, Generics, Ident, Lifetime, LifetimeParam, TypeParamBound};
+use syn::{GenericParam, Generics, Ident, Lifetime, LifetimeParam, TypeParamBound, parse_quote};
 
 /// Adds a single lifetime symbol eg. <'a>
 #[inline]

@@ -85,7 +85,6 @@ async fn main() -> ! {
     let response = client
         .send(&common::general::SendSocketData {
             connect_id: 0,
-            send_length: 5,
             data: b"hello",
         })
         .await;

@@ -3,7 +3,7 @@
 use core::fmt;
 
 use heapless_bytes::Bytes;
-use serde::{de, Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, de};
 
 /// Structure for parsing a length delimited bytes payload.
 ///

@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, parse_quote, Field, Fields, Ident, PathSegment, Type};
+use syn::{Field, Fields, Ident, PathSegment, Type, parse_macro_input, parse_quote};
 
 use crate::{
     helpers,

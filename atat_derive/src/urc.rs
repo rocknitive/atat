@@ -1,7 +1,7 @@
 use crate::proc_macro::TokenStream;
 
 use quote::quote;
-use syn::{parse_macro_input, Fields};
+use syn::{Fields, parse_macro_input};
 
 use crate::parse::{ParseInput, UrcAttributes};
 

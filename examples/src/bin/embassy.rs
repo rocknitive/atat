@@ -2,8 +2,8 @@
 #![no_main]
 
 use atat::{
-    asynch::{AtatClient, Client},
     AtatIngress, DefaultDigester, Ingress, ResponseSlot, UrcChannel,
+    asynch::{AtatClient, Client},
 };
 use atat_examples::common;
 use embassy_executor::Spawner;

@@ -40,6 +40,12 @@ pub struct ArgAttributes {
     pub default: bool,
 }
 
+/// Parsed attributes of `#[at_data(..)]`
+#[derive(Clone)]
+pub struct DataAttributes {
+    pub position: usize,
+}
+
 /// Parsed attributes of `#[at_urc(..)]`
 #[derive(Clone)]
 pub struct UrcAttributes {
@@ -58,7 +64,7 @@ pub struct EnumAttributes {
 pub struct FieldAttributes {
     pub at_urc: Option<UrcAttributes>,
     pub at_arg: Option<ArgAttributes>,
-    pub at_data: bool,
+    pub at_data: Option<DataAttributes>,
 }
 
 #[derive(Clone)]
@@ -78,7 +84,7 @@ pub fn parse_field_attr(attributes: &[Attribute]) -> Result<FieldAttributes> {
     let mut attrs = FieldAttributes {
         at_urc: None,
         at_arg: None,
-        at_data: false,
+        at_data: None,
     };
     for attr in attributes {
         if attr.path().is_ident("at_arg") {
@@ -86,7 +92,7 @@ pub fn parse_field_attr(attributes: &[Attribute]) -> Result<FieldAttributes> {
         } else if attr.path().is_ident("at_urc") {
             attrs.at_urc = Some(attr.parse_args()?);
         } else if attr.path().is_ident("at_data") {
-            attrs.at_data = true;
+            attrs.at_data = Some(attr.parse_args()?);
         }
     }
     Ok(attrs)
@@ -259,6 +265,51 @@ impl Parse for UrcAttributes {
         }
 
         Ok(at_urc)
+    }
+}
+
+impl Parse for DataAttributes {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let mut position = None;
+
+        while !input.is_empty() {
+            match input.parse::<syn::Meta>()? {
+                syn::Meta::NameValue(name_value) if name_value.path.is_ident("position") => {
+                    match name_value.value {
+                        Expr::Lit(ExprLit {
+                            lit: Lit::Int(v), ..
+                        }) => {
+                            position = Some(v.base10_parse().unwrap());
+                        }
+                        _ => {
+                            return Err(Error::new(
+                                Span::call_site(),
+                                "position argument must be a positive integer",
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    return Err(Error::new(
+                        Span::call_site(),
+                        "unknown argument for #[at_data(..)]",
+                    ));
+                }
+            }
+
+            if !input.parse::<syn::token::Comma>().is_ok() {
+                break;
+            }
+        }
+
+        let Some(position) = position else {
+            return Err(Error::new(
+                Span::call_site(),
+                "#[at_data(..)] requires a position argument",
+            ));
+        };
+
+        Ok(Self { position })
     }
 }
 

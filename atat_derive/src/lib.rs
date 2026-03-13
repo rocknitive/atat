@@ -174,7 +174,7 @@ pub fn derive_atat_enum(input: TokenStream) -> TokenStream {
 ///   `Response` is the type of the response passed in the `at_cmd`
 /// - `expects_prompt`: **bool** Whether the command should wait for a modem
 ///   prompt, write a raw payload, and then parse the final response (default
-///   false).
+///   false). This is inferred automatically when using `#[at_data(..)]`.
 ///
 /// ### Field attribute (`#[at_arg(..)]`)
 /// The `AtatCmd` derive macro comes with an optional field attribute
@@ -186,9 +186,9 @@ pub fn derive_atat_enum(input: TokenStream) -> TokenStream {
 ///   and field `b` would have `position = 2`) (defaults to order of the fields
 ///   in the struct)
 ///
-/// A field can additionally be marked with `#[at_data]` to exclude it from the
-/// serialized command line and instead send it as the raw payload after the
-/// prompt when `expects_prompt = true` is enabled.
+/// A field can additionally be marked with `#[at_data(position = N)]` to
+/// exclude it from the serialized command line, inject its length at argument
+/// position `N`, and send it as the raw payload after the prompt.
 #[proc_macro_derive(AtatCmd, attributes(at_cmd, at_arg, at_data))]
 pub fn derive_atat_cmd(input: TokenStream) -> TokenStream {
     cmd::atat_cmd(input)

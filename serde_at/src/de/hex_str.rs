@@ -3,7 +3,7 @@ use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::ops::{Deref, Shl};
 use serde::de::Visitor;
-use serde::{de, Deserialize};
+use serde::{Deserialize, de};
 
 struct HexLiteralVisitor<T> {
     _ty: PhantomData<T>,
@@ -110,13 +110,13 @@ impl_hex_literal_visitor! { u8 u16 u32 u64 u128 }
 
 #[cfg(feature = "hex_str_arrays")]
 mod unstable {
-    use crate::de::hex_str::HexLiteralVisitor;
     use crate::HexStr;
+    use crate::de::hex_str::HexLiteralVisitor;
     use core::fmt;
     use core::marker::PhantomData;
     use core::ops::Deref;
     use serde::de::Visitor;
-    use serde::{de, Deserialize};
+    use serde::{Deserialize, de};
 
     impl<'de, const N: usize> Visitor<'de> for HexLiteralVisitor<[u8; N]> {
         type Value = [u8; N];

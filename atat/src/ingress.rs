@@ -1,6 +1,6 @@
 use crate::{
-    helpers::LossyStr, urc_channel::UrcPublisher, AtatUrc, DigestResult, Digester, ResponseSlot,
-    UrcChannel,
+    AtatUrc, DigestResult, Digester, ResponseSlot, UrcChannel, helpers::LossyStr,
+    urc_channel::UrcPublisher,
 };
 use core::fmt;
 
@@ -114,13 +114,13 @@ pub struct Ingress<
 }
 
 impl<
-        'a,
-        D: Digester,
-        Urc: AtatUrc,
-        const RES_BUF_SIZE: usize,
-        const URC_CAPACITY: usize,
-        const URC_SUBSCRIBERS: usize,
-    > Ingress<'a, D, Urc, RES_BUF_SIZE, URC_CAPACITY, URC_SUBSCRIBERS>
+    'a,
+    D: Digester,
+    Urc: AtatUrc,
+    const RES_BUF_SIZE: usize,
+    const URC_CAPACITY: usize,
+    const URC_SUBSCRIBERS: usize,
+> Ingress<'a, D, Urc, RES_BUF_SIZE, URC_CAPACITY, URC_SUBSCRIBERS>
 {
     pub fn new(
         digester: D,
@@ -139,12 +139,12 @@ impl<
 }
 
 impl<
-        D: Digester,
-        Urc: AtatUrc,
-        const RES_BUF_SIZE: usize,
-        const URC_CAPACITY: usize,
-        const URC_SUBSCRIBERS: usize,
-    > AtatIngress for Ingress<'_, D, Urc, RES_BUF_SIZE, URC_CAPACITY, URC_SUBSCRIBERS>
+    D: Digester,
+    Urc: AtatUrc,
+    const RES_BUF_SIZE: usize,
+    const URC_CAPACITY: usize,
+    const URC_SUBSCRIBERS: usize,
+> AtatIngress for Ingress<'_, D, Urc, RES_BUF_SIZE, URC_CAPACITY, URC_SUBSCRIBERS>
 {
     fn write_buf(&mut self) -> &mut [u8] {
         &mut self.buf[self.pos..]
@@ -325,8 +325,8 @@ impl<
 #[cfg(test)]
 mod tests {
     use crate::{
-        self as atat, atat_derive::AtatUrc, digest::parser::take_until_including,
-        response_slot::ResponseSlot, AtDigester, Response, UrcChannel,
+        self as atat, AtDigester, Response, UrcChannel, atat_derive::AtatUrc,
+        digest::parser::take_until_including, response_slot::ResponseSlot,
     };
     use embedded_io::ErrorType;
 

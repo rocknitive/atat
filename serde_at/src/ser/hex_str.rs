@@ -1,7 +1,7 @@
 use crate::HexStr;
 use core::fmt::Write;
-use serde::ser::Serialize;
 use serde::Serializer;
+use serde::ser::Serialize;
 
 macro_rules! impl_hex_str_serialize {
     ($type:ty, $len:expr, $len_delimited:expr, $hex_size:literal) => {

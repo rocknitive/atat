@@ -1,8 +1,8 @@
 use atat_examples::common;
 
 use atat::{
-    asynch::{AtatClient, Client},
     AtatIngress, Config, DefaultDigester, Ingress, ResponseSlot, UrcChannel,
+    asynch::{AtatClient, Client},
 };
 use embedded_io_adapters::tokio_1::FromTokio;
 use static_cell::StaticCell;

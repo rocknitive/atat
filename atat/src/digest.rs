@@ -156,7 +156,7 @@ impl<P: Parser> Digester for AtDigester<P> {
                 return (
                     DigestResult::Response(Ok(response)),
                     len + space_and_echo_bytes,
-                )
+                );
             }
             Err(ParseError::Incomplete) => return incomplete,
             _ => {}
@@ -175,7 +175,7 @@ impl<P: Parser> Digester for AtDigester<P> {
         // Custom prompts for data replies first, if any
         match (self.custom_prompt)(buf) {
             Ok((response, len)) => {
-                return (DigestResult::Prompt(response), len + space_and_echo_bytes)
+                return (DigestResult::Prompt(response), len + space_and_echo_bytes);
             }
             Err(ParseError::Incomplete) => return incomplete,
             _ => {}
@@ -193,7 +193,7 @@ impl<P: Parser> Digester for AtDigester<P> {
                 return (
                     DigestResult::Response(Err(InternalError::Custom(response))),
                     len + space_and_echo_bytes,
-                )
+                );
             }
             Err(ParseError::Incomplete) => return incomplete,
             _ => {}
@@ -225,13 +225,13 @@ pub mod parser {
     use core::str::FromStr;
 
     use nom::{
+        IResult,
         branch::alt,
         bytes::streaming::tag,
         character::complete,
         combinator::{eof, map, map_res, recognize},
         error::ParseError,
         sequence::tuple,
-        IResult,
     };
 
     /// Matches the equivalent of regex: "\r\n{token}(:.*)?\r\n"
@@ -452,8 +452,8 @@ pub mod parser {
     }
 
     /// Matches the equivalent of regex: "\r\n(ERROR)|(COMMAND NOT SUPPORT)\r\n"
-    fn generic_error<'a, Error: ParseError<&'a [u8]>>(
-    ) -> impl Fn(&'a [u8]) -> IResult<&'a [u8], usize, Error> {
+    fn generic_error<'a, Error: ParseError<&'a [u8]>>()
+    -> impl Fn(&'a [u8]) -> IResult<&'a [u8], usize, Error> {
         move |i: &[u8]| {
             let (i, (data, tag)) = alt((
                 take_until_including("\r\nERROR\r\n"),
@@ -465,8 +465,8 @@ pub mod parser {
     }
 
     /// Matches the equivalent of regex: "\r\n(NO CARRIER)|(BUSY)|(NO ANSWER)|(NO DIALTONE)\r\n"
-    fn connection_error<'a, Error: ParseError<&'a [u8]>>(
-    ) -> impl Fn(&'a [u8]) -> IResult<&'a [u8], (ConnectionError, usize), Error> {
+    fn connection_error<'a, Error: ParseError<&'a [u8]>>()
+    -> impl Fn(&'a [u8]) -> IResult<&'a [u8], (ConnectionError, usize), Error> {
         move |i: &[u8]| {
             alt((
                 map(
