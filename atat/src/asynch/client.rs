@@ -1,15 +1,16 @@
 use super::AtatClient;
 use crate::{
+    AtatCmd, Config, Error, Response,
     helpers::LossyStr,
     response_slot::{ResponseSlot, ResponseSlotGuard},
-    AtatCmd, Config, Error, Response,
 };
-use embassy_time::{with_timeout, Duration, Instant, TimeoutError, Timer};
+use embassy_time::{Duration, Instant, TimeoutError, Timer, with_timeout};
 use embedded_io::ErrorType;
 use embedded_io_async::Write;
 use futures::{
-    future::{select, Either},
-    pin_mut, Future,
+    Future,
+    future::{Either, select},
+    pin_mut,
 };
 
 pub struct Client<'a, W: Write, const INGRESS_BUF_SIZE: usize> {
@@ -122,14 +123,35 @@ impl<W: Write, const INGRESS_BUF_SIZE: usize> AtatClient for Client<'_, W, INGRE
         let len = cmd.write(self.buf);
         self.send_request(len).await?;
         if !Cmd::EXPECTS_RESPONSE_CODE {
-            cmd.parse(Ok(&[]))
-        } else {
-            let response = self
-                .wait_response(Duration::from_millis(Cmd::MAX_TIMEOUT_MS.into()))
-                .await?;
-            let response: &Response<INGRESS_BUF_SIZE> = &response.borrow();
-            cmd.parse(response.into())
+            return cmd.parse(Ok(&[]));
         }
+        let timeout = Duration::from_millis(Cmd::MAX_TIMEOUT_MS.into());
+        {
+            let response = self.wait_response(timeout).await?;
+            let response: &Response<INGRESS_BUF_SIZE> = &response.borrow();
+
+            if !Cmd::EXPECTS_PROMPT || !matches!(response, Response::Prompt(_)) {
+                return cmd.parse((response).into());
+            }
+        }
+
+        self.res_slot.reset();
+
+        with_timeout(self.config.tx_timeout, self.writer.write_all(cmd.payload()))
+            .await
+            .map_err(|_| Error::Timeout)?
+            .map_err(|_| Error::Write)?;
+
+        with_timeout(self.config.flush_timeout, self.writer.flush())
+            .await
+            .map_err(|_| Error::Timeout)?
+            .map_err(|_| Error::Write)?;
+
+        self.start_cooldown_timer();
+
+        let response = self.wait_response(timeout).await?;
+        let response: &Response<INGRESS_BUF_SIZE> = &response.borrow();
+        cmd.parse(response.into())
     }
 }
 
@@ -137,8 +159,9 @@ impl<W: Write, const INGRESS_BUF_SIZE: usize> AtatClient for Client<'_, W, INGRE
 mod tests {
     use super::*;
     use crate as atat;
-    use crate::atat_derive::{AtatCmd, AtatEnum, AtatResp};
     use crate::Error;
+    use crate::InternalError;
+    use crate::atat_derive::{AtatCmd, AtatEnum, AtatResp};
     use core::sync::atomic::{AtomicU64, Ordering};
     use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
     use embassy_sync::pubsub::PubSubChannel;
@@ -182,6 +205,38 @@ mod tests {
 
     #[derive(Clone, AtatResp, PartialEq, Debug)]
     pub struct NoResponse;
+
+    pub struct RawSendCmd<'a> {
+        pub socket: u8,
+        pub data: &'a [u8],
+    }
+
+    impl AtatCmd for RawSendCmd<'_> {
+        type Response = NoResponse;
+
+        const MAX_LEN: usize = 32;
+        const MAX_TIMEOUT_MS: u32 = 180000;
+        const EXPECTS_PROMPT: bool = true;
+
+        fn write(&self, buf: &mut [u8]) -> usize {
+            let command = format!("AT+USOWR={},{}\r", self.socket, self.data.len());
+            let bytes = command.as_bytes();
+            buf[..bytes.len()].copy_from_slice(bytes);
+            bytes.len()
+        }
+
+        fn payload(&self) -> &[u8] {
+            self.data
+        }
+
+        fn parse(&self, resp: Result<&[u8], InternalError>) -> Result<Self::Response, Error> {
+            match resp {
+                Ok(&[]) => Ok(NoResponse),
+                Ok(_) => Ok(NoResponse),
+                Err(e) => Err(e.into()),
+            }
+        }
+    }
 
     macro_rules! setup {
         ($config:expr) => {{
@@ -286,5 +341,56 @@ mod tests {
         send.unwrap();
 
         assert_ne!(0, CALL_COUNT.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn send_data_command() {
+        let (mut client, mut tx, slot) = setup!(Config::new());
+        let cmd = RawSendCmd {
+            socket: 3,
+            data: b"hello",
+        };
+
+        let sent = tokio::spawn(async move {
+            let preamble = tx.next_message_pure().await;
+            slot.signal_prompt(b'>').unwrap();
+            let payload = tx.next_message_pure().await;
+            slot.signal_response(Ok(&[])).unwrap();
+            (preamble, payload)
+        });
+
+        let send = tokio::spawn(async move {
+            assert_eq!(Ok(NoResponse), client.send(&cmd).await);
+        });
+
+        let (sent, send) = join!(sent, send);
+        let (preamble, payload) = sent.unwrap();
+        send.unwrap();
+
+        assert_eq!("AT+USOWR=3,5\r", preamble);
+        assert_eq!("hello", payload);
+    }
+
+    #[tokio::test]
+    async fn send_data_command_returns_immediate_response_without_payload() {
+        let (mut client, mut tx, slot) = setup!(Config::new());
+        let cmd = RawSendCmd {
+            socket: 3,
+            data: b"hello",
+        };
+
+        let sent = tokio::spawn(async move {
+            let preamble = tx.next_message_pure().await;
+            slot.signal_response(Ok(&[])).unwrap();
+            preamble
+        });
+
+        let send = tokio::spawn(async move {
+            assert_eq!(Ok(NoResponse), client.send(&cmd).await);
+        });
+
+        let (sent, send) = join!(sent, send);
+        assert_eq!("AT+USOWR=3,5\r", sent.unwrap());
+        send.unwrap();
     }
 }

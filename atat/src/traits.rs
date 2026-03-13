@@ -86,8 +86,16 @@ pub trait AtatCmd {
     /// Implemented to enhance expandability of ATAT
     const EXPECTS_RESPONSE_CODE: bool = true;
 
+    /// Whether or not the command expects a prompt before sending a raw payload.
+    const EXPECTS_PROMPT: bool = false;
+
     /// Write the command and return the number of written bytes.
     fn write(&self, buf: &mut [u8]) -> usize;
+
+    /// Return the raw payload to be written after the prompt arrives.
+    fn payload(&self) -> &[u8] {
+        &[]
+    }
 
     /// Parse the response into a `Self::Response` or `Error` instance.
     fn parse(&self, resp: Result<&[u8], InternalError>) -> Result<Self::Response, Error>;

@@ -1,8 +1,9 @@
 use atat_examples::common;
 
 use atat::{
+    AtDigester, AtatIngress, Config, Ingress, ResponseSlot, UrcChannel,
     asynch::{AtatClient, Client},
-    AtatIngress, Config, DefaultDigester, Ingress, ResponseSlot, UrcChannel,
+    digest::ParseError,
 };
 use embedded_io_adapters::tokio_1::FromTokio;
 use static_cell::StaticCell;
@@ -18,10 +19,31 @@ static RES_SLOT: ResponseSlot<INGRESS_BUF_SIZE> = ResponseSlot::new();
 static URC_CHANNEL: UrcChannel<common::Urc, URC_CAPACITY, URC_SUBSCRIBERS> = UrcChannel::new();
 
 // Responses: Trigger
-#[allow(dead_code)]
-const RESPONSE_ERROR: &str = "\r\nERROR\r\n";
-#[allow(dead_code)]
-const RESPONSE_CME_ERROR: &str = "\r\n+CME ERROR: 122\r\n";
+const RESPONSE_MANUFACTURER: &str = "\r\nQuectel\r\n\r\nOK\r\n";
+const RESPONSE_PROMPT: &str = "\r\n> ";
+const RESPONSE_SEND_OK: &str = "\r\nSEND OK\r\n";
+
+fn parse_send_ok(buf: &[u8]) -> Result<(&[u8], usize), ParseError> {
+    if buf.starts_with(RESPONSE_SEND_OK.as_bytes()) {
+        Ok((&[], RESPONSE_SEND_OK.len()))
+    } else if RESPONSE_SEND_OK.as_bytes().starts_with(buf) {
+        Err(ParseError::Incomplete)
+    } else {
+        Err(ParseError::NoMatch)
+    }
+}
+
+fn parse_send_fail(buf: &[u8]) -> Result<(&[u8], usize), ParseError> {
+    const RESPONSE_SEND_FAIL: &str = "\r\nSEND FAIL\r\n";
+
+    if buf.starts_with(RESPONSE_SEND_FAIL.as_bytes()) {
+        Ok((b"SEND FAIL", RESPONSE_SEND_FAIL.len()))
+    } else if RESPONSE_SEND_FAIL.as_bytes().starts_with(buf) {
+        Err(ParseError::Incomplete)
+    } else {
+        Err(ParseError::NoMatch)
+    }
+}
 
 #[tokio::main]
 async fn main() -> ! {
@@ -33,7 +55,9 @@ async fn main() -> ! {
     let (device_rx, device_tx) = tokio::io::split(device);
 
     let ingress = Ingress::new(
-        DefaultDigester::<common::Urc>::default(),
+        AtDigester::<common::Urc>::new()
+            .with_custom_success(parse_send_ok)
+            .with_custom_error(parse_send_fail),
         INGRESS_BUF.init([0; INGRESS_BUF_SIZE]),
         &RES_SLOT,
         &URC_CHANNEL,
@@ -43,7 +67,6 @@ async fn main() -> ! {
     tokio::spawn(device_task(
         FromTokio::new(device_rx),
         FromTokio::new(device_tx),
-        RESPONSE_CME_ERROR.to_string(),
     ));
 
     static BUF: StaticCell<[u8; 1024]> = StaticCell::new();
@@ -53,12 +76,23 @@ async fn main() -> ! {
     let response = client.send(&common::general::GetManufacturerId).await;
 
     match response {
-        Ok(_) => {
-            log::info!("Response: OK");
-        }
+        Ok(response) => log::info!("Manufacturer: {:?}", response.id),
         Err(e) => {
             log::error!("Error: {:?}", e);
         }
+    }
+
+    let response = client
+        .send(&common::general::SendSocketData {
+            connect_id: 0,
+            send_length: 5,
+            data: b"hello",
+        })
+        .await;
+
+    match response {
+        Ok(_) => log::info!("Prompt data send completed"),
+        Err(e) => log::error!("Prompt data send failed: {:?}", e),
     }
 
     exit(0);
@@ -67,25 +101,47 @@ async fn main() -> ! {
 async fn device_task(
     mut reader: impl embedded_io_async::Read,
     mut writer: impl embedded_io_async::Write,
-    response: String,
 ) -> ! {
     let mut buf = [0; 1024];
     loop {
         let n = reader.read(&mut buf).await.unwrap();
-        let received = core::str::from_utf8(&buf[..n]).unwrap();
+        let received = &buf[..n];
+        log::debug!(
+            "Received from host: {:?}",
+            core::str::from_utf8(received).unwrap()
+        );
 
-        log::debug!("Received from host: {:?}", received);
-
-        for byte in response.as_bytes() {
-            writer.write(&[*byte]).await.unwrap();
+        if received == b"AT+CGMI\r" {
+            writer
+                .write_all(RESPONSE_MANUFACTURER.as_bytes())
+                .await
+                .unwrap();
+            writer.flush().await.unwrap();
+            continue;
         }
+
+        if received == b"AT+QISEND=0,5\r" {
+            writer.write_all(RESPONSE_PROMPT.as_bytes()).await.unwrap();
+            writer.flush().await.unwrap();
+
+            let n = reader.read(&mut buf).await.unwrap();
+            let payload = &buf[..n];
+            log::debug!("Received raw payload: {:?}", payload);
+            assert_eq!(payload, b"hello");
+
+            writer.write_all(RESPONSE_SEND_OK.as_bytes()).await.unwrap();
+            writer.flush().await.unwrap();
+            continue;
+        }
+
+        panic!("Unexpected host message: {:?}", received);
     }
 }
 
 async fn ingress_task<'a>(
     mut ingress: Ingress<
         'a,
-        DefaultDigester<common::Urc>,
+        AtDigester<common::Urc>,
         common::Urc,
         INGRESS_BUF_SIZE,
         URC_CAPACITY,

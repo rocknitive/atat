@@ -2,6 +2,7 @@
 pub mod responses;
 pub mod urc;
 
+use crate::common::NoResponse;
 use atat::atat_derive::AtatCmd;
 use responses::*;
 
@@ -32,3 +33,15 @@ pub struct GetSoftwareVersion;
 #[derive(Clone, AtatCmd)]
 #[at_cmd("+UWAPMACADDR", WifiMac)]
 pub struct GetWifiMac;
+
+/// Quectel send data in prompt mode +QISEND
+#[derive(Clone, AtatCmd)]
+#[at_cmd("+QISEND", NoResponse, timeout_ms = 5000, expects_prompt = true)]
+pub struct SendSocketData<'a> {
+    #[at_arg(position = 0)]
+    pub connect_id: u8,
+    #[at_arg(position = 1)]
+    pub send_length: usize,
+    #[at_data]
+    pub data: &'a [u8],
+}

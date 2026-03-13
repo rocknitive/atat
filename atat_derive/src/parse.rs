@@ -25,6 +25,7 @@ pub struct CmdAttributes {
     pub abortable: Option<bool>,
     pub reattempt_on_parse_err: Option<bool>,
     pub response_code: Option<bool>,
+    pub expects_prompt: bool,
     pub value_sep: bool,
     pub cmd_prefix: String,
     pub termination: String,
@@ -57,6 +58,7 @@ pub struct EnumAttributes {
 pub struct FieldAttributes {
     pub at_urc: Option<UrcAttributes>,
     pub at_arg: Option<ArgAttributes>,
+    pub at_data: bool,
 }
 
 #[derive(Clone)]
@@ -76,12 +78,15 @@ pub fn parse_field_attr(attributes: &[Attribute]) -> Result<FieldAttributes> {
     let mut attrs = FieldAttributes {
         at_urc: None,
         at_arg: None,
+        at_data: false,
     };
     for attr in attributes {
         if attr.path().is_ident("at_arg") {
             attrs.at_arg = Some(attr.parse_args()?);
         } else if attr.path().is_ident("at_urc") {
             attrs.at_urc = Some(attr.parse_args()?);
+        } else if attr.path().is_ident("at_data") {
+            attrs.at_data = true;
         }
     }
     Ok(attrs)
@@ -177,7 +182,7 @@ impl Parse for ArgAttributes {
                             return Err(Error::new(
                                 Span::call_site(),
                                 "value argument must be an integer",
-                            ))
+                            ));
                         }
                     }
                 }
@@ -190,7 +195,7 @@ impl Parse for ArgAttributes {
                             return Err(Error::new(
                                 Span::call_site(),
                                 "position argument must be a positive integer",
-                            ))
+                            ));
                         }
                     }
                 }
@@ -203,7 +208,7 @@ impl Parse for ArgAttributes {
                             return Err(Error::new(
                                 Span::call_site(),
                                 "len argument must be a positive integer",
-                            ))
+                            ));
                         }
                     }
                 }
@@ -211,7 +216,7 @@ impl Parse for ArgAttributes {
                     return Err(Error::new(
                         Span::call_site(),
                         "default does not have a value. Eg #[at_arg(default)]",
-                    ))
+                    ));
                 }
                 syn::Meta::Path(path) if path.is_ident("default") => {
                     attrs.default = true;
@@ -235,7 +240,7 @@ impl Parse for UrcAttributes {
                 return Err(Error::new(
                     input.span(),
                     "expected string value for `at_urc`",
-                ))
+                ));
             }
         };
 
@@ -272,6 +277,7 @@ impl Parse for CmdAttributes {
             abortable: None,
             reattempt_on_parse_err: None,
             response_code: None,
+            expects_prompt: false,
             value_sep: true,
             cmd_prefix: String::from("AT"),
             termination: String::from("\r"),
@@ -291,7 +297,7 @@ impl Parse for CmdAttributes {
                         return Err(Error::new(
                             Span::call_site(),
                             "expected integer value for 'timeout_ms'",
-                        ))
+                        ));
                     }
                 }
             } else if optional.path.is_ident("attempts") {
@@ -305,7 +311,7 @@ impl Parse for CmdAttributes {
                         return Err(Error::new(
                             Span::call_site(),
                             "expected integer value for 'attempts'",
-                        ))
+                        ));
                     }
                 }
             } else if optional.path.is_ident("parse") {
@@ -317,7 +323,7 @@ impl Parse for CmdAttributes {
                         return Err(Error::new(
                             Span::call_site(),
                             "expected function for 'parse'",
-                        ))
+                        ));
                     }
                 }
             } else if optional.path.is_ident("reattempt_on_parse_err") {
@@ -331,7 +337,7 @@ impl Parse for CmdAttributes {
                         return Err(Error::new(
                             Span::call_site(),
                             "expected bool value for 'reattempt_on_parse_err'",
-                        ))
+                        ));
                     }
                 }
             } else if optional.path.is_ident("abortable") {
@@ -345,7 +351,7 @@ impl Parse for CmdAttributes {
                         return Err(Error::new(
                             Span::call_site(),
                             "expected bool value for 'abortable'",
-                        ))
+                        ));
                     }
                 }
             } else if optional.path.is_ident("value_sep") {
@@ -359,7 +365,7 @@ impl Parse for CmdAttributes {
                         return Err(Error::new(
                             Span::call_site(),
                             "expected bool value for 'value_sep'",
-                        ))
+                        ));
                     }
                 }
             } else if optional.path.is_ident("cmd_prefix") {
@@ -373,7 +379,7 @@ impl Parse for CmdAttributes {
                         return Err(Error::new(
                             Span::call_site(),
                             "expected string value for 'cmd_prefix'",
-                        ))
+                        ));
                     }
                 }
             } else if optional.path.is_ident("termination") {
@@ -387,7 +393,7 @@ impl Parse for CmdAttributes {
                         return Err(Error::new(
                             Span::call_site(),
                             "expected string value for 'termination'",
-                        ))
+                        ));
                     }
                 }
             } else if optional.path.is_ident("escape_strings") {
@@ -401,7 +407,7 @@ impl Parse for CmdAttributes {
                         return Err(Error::new(
                             Span::call_site(),
                             "expected bool value for 'escape_strings'",
-                        ))
+                        ));
                     }
                 }
             } else if optional.path.is_ident("response_code") {
@@ -415,7 +421,21 @@ impl Parse for CmdAttributes {
                         return Err(Error::new(
                             Span::call_site(),
                             "expected bool value for 'response_code'",
-                        ))
+                        ));
+                    }
+                }
+            } else if optional.path.is_ident("expects_prompt") {
+                match optional.value {
+                    Expr::Lit(ExprLit {
+                        lit: Lit::Bool(v), ..
+                    }) => {
+                        at_cmd.expects_prompt = v.value;
+                    }
+                    _ => {
+                        return Err(Error::new(
+                            Span::call_site(),
+                            "expected bool value for 'expects_prompt'",
+                        ));
                     }
                 }
             }

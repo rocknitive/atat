@@ -1,5 +1,6 @@
 use crate::proc_macro::TokenStream;
 
+use proc_macro2::Span;
 use quote::{format_ident, quote};
 use syn::parse_macro_input;
 
@@ -23,6 +24,7 @@ pub fn atat_cmd(input: TokenStream) -> TokenStream {
         reattempt_on_parse_err,
         abortable,
         response_code,
+        expects_prompt,
         value_sep,
         cmd_prefix,
         termination,
@@ -31,7 +33,51 @@ pub fn atat_cmd(input: TokenStream) -> TokenStream {
 
     let ident_str = ident.to_string();
 
-    let n_fields = variants.len();
+    let cmd_variants: Vec<_> = variants
+        .iter()
+        .filter(|field| !field.attrs.at_data)
+        .cloned()
+        .collect();
+    let data_variants: Vec<_> = variants
+        .iter()
+        .filter(|field| field.attrs.at_data)
+        .cloned()
+        .collect();
+
+    if data_variants.len() > 1 {
+        return syn::Error::new(Span::call_site(), "only one #[at_data] field is supported")
+            .to_compile_error()
+            .into();
+    }
+
+    if expects_prompt && data_variants.is_empty() {
+        return syn::Error::new(
+            Span::call_site(),
+            "#[at_cmd(..., expects_prompt = true)] requires one #[at_data] field",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    if !expects_prompt && !data_variants.is_empty() {
+        return syn::Error::new(
+            Span::call_site(),
+            "#[at_data] requires #[at_cmd(..., expects_prompt = true)]",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    if expects_prompt && matches!(response_code, Some(false)) {
+        return syn::Error::new(
+            Span::call_site(),
+            "expects_prompt = true requires response_code to remain enabled",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    let n_fields = cmd_variants.len();
 
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
@@ -80,12 +126,20 @@ pub fn atat_cmd(input: TokenStream) -> TokenStream {
         None => quote! {},
     };
 
+    let expects_prompt = if expects_prompt {
+        quote! {
+            const EXPECTS_PROMPT: bool = true;
+        }
+    } else {
+        quote! {}
+    };
+
     let mut cmd_len = cmd_prefix.len() + cmd.len() + termination.len();
     if value_sep {
         cmd_len += 1;
     }
 
-    let (field_names, field_names_str): (Vec<_>, Vec<_>) = variants
+    let (field_names, field_names_str): (Vec<_>, Vec<_>) = cmd_variants
         .iter()
         .map(|f| {
             let ident = f.ident.clone().unwrap();
@@ -94,8 +148,8 @@ pub fn atat_cmd(input: TokenStream) -> TokenStream {
         .unzip();
 
     let init_len = n_fields.checked_sub(1).unwrap_or(n_fields);
-    let unescaped_struct_len = crate::len::struct_len(variants.clone(), init_len, false);
-    let escaped_struct_len = crate::len::struct_len(variants, init_len, true);
+    let unescaped_struct_len = crate::len::struct_len(cmd_variants.clone(), init_len, false);
+    let escaped_struct_len = crate::len::struct_len(cmd_variants, init_len, true);
 
     let max_len_struct = if escape_strings {
         &escaped_struct_len
@@ -104,6 +158,18 @@ pub fn atat_cmd(input: TokenStream) -> TokenStream {
     };
 
     let ident_len = format_ident!("ATAT_{}_LEN", ident.to_string().to_uppercase());
+
+    let payload = if let Some(data_field) = data_variants.first() {
+        let field_name = data_field.ident.clone().unwrap();
+        quote! {
+            #[inline]
+            fn payload(&self) -> &[u8] {
+                self.#field_name.as_ref()
+            }
+        }
+    } else {
+        quote! {}
+    };
 
     let parse = if let Some(parse) = parse {
         quote! {
@@ -154,6 +220,8 @@ pub fn atat_cmd(input: TokenStream) -> TokenStream {
 
             #response
 
+            #expects_prompt
+
             #reattempt_on_parse_err
 
             #[inline]
@@ -170,6 +238,8 @@ pub fn atat_cmd(input: TokenStream) -> TokenStream {
             }
 
             #parse
+
+            #payload
         }
 
         #[automatically_derived]

@@ -1,8 +1,8 @@
 use crate::proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, Ident, Type};
+use syn::{Ident, Type, parse_macro_input};
 
-use crate::parse::{parse_field_attr, ArgAttributes, FieldAttributes, ParseInput, Variant};
+use crate::parse::{ArgAttributes, FieldAttributes, ParseInput, Variant, parse_field_attr};
 
 /// Calculate the serialized length of a struct
 ///
@@ -131,6 +131,10 @@ pub fn atat_len(input: TokenStream) -> TokenStream {
         ..
     } = parse_macro_input!(input as ParseInput);
 
+    let variants: Vec<_> = variants
+        .into_iter()
+        .filter(|field| !field.attrs.at_data)
+        .collect();
     let n_fields = variants.len();
 
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();

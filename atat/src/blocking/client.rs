@@ -1,11 +1,11 @@
 use embassy_time::{Duration, Instant, TimeoutError};
 use embedded_io::Write;
 
-use super::{blocking_timer::BlockingTimer, AtatClient};
+use super::{AtatClient, blocking_timer::BlockingTimer};
 use crate::{
+    AtatCmd, Config, Error, Response,
     helpers::LossyStr,
     response_slot::{ResponseSlot, ResponseSlotGuard},
-    AtatCmd, Config, Error, Response,
 };
 
 /// Client responsible for handling send, receive and timeout from the
@@ -111,7 +111,35 @@ where
         if !Cmd::EXPECTS_RESPONSE_CODE {
             cmd.parse(Ok(&[]))
         } else {
-            let response = self.wait_response(Duration::from_millis(Cmd::MAX_TIMEOUT_MS.into()))?;
+            let timeout = Duration::from_millis(Cmd::MAX_TIMEOUT_MS.into());
+            let first_response = {
+                let response = self.wait_response(timeout)?;
+                let response: &Response<INGRESS_BUF_SIZE> = &response.borrow();
+
+                if Cmd::EXPECTS_PROMPT {
+                    match response {
+                        Response::Prompt(_) => None,
+                        _ => Some(cmd.parse(response.into())),
+                    }
+                } else {
+                    Some(cmd.parse(response.into()))
+                }
+            };
+
+            if let Some(result) = first_response {
+                return result;
+            }
+
+            self.res_slot.reset();
+
+            self.writer
+                .write_all(cmd.payload())
+                .map_err(|_| Error::Write)?;
+            self.writer.flush().map_err(|_| Error::Write)?;
+
+            self.start_cooldown_timer();
+
+            let response = self.wait_response(timeout)?;
             let response: &Response<INGRESS_BUF_SIZE> = &response.borrow();
             cmd.parse(response.into())
         }
@@ -215,6 +243,38 @@ mod test {
     }
     #[derive(Clone, AtatResp, PartialEq, Debug)]
     pub struct NoResponse;
+
+    pub struct RawSendCmd<'a> {
+        pub socket: u8,
+        pub data: &'a [u8],
+    }
+
+    impl AtatCmd for RawSendCmd<'_> {
+        type Response = NoResponse;
+
+        const MAX_LEN: usize = 32;
+        const MAX_TIMEOUT_MS: u32 = 180000;
+        const EXPECTS_PROMPT: bool = true;
+
+        fn write(&self, buf: &mut [u8]) -> usize {
+            let command = format!("AT+USOWR={},{}\r", self.socket, self.data.len());
+            let bytes = command.as_bytes();
+            buf[..bytes.len()].copy_from_slice(bytes);
+            bytes.len()
+        }
+
+        fn payload(&self) -> &[u8] {
+            self.data
+        }
+
+        fn parse(&self, resp: Result<&[u8], InternalError>) -> Result<Self::Response, Error> {
+            match resp {
+                Ok(&[]) => Ok(NoResponse),
+                Ok(_) => Ok(NoResponse),
+                Err(e) => Err(e.into()),
+            }
+        }
+    }
 
     #[derive(Clone, AtatResp, PartialEq, Debug)]
     pub struct TestResponseString {
@@ -514,6 +574,57 @@ mod test {
         sent.await.unwrap();
 
         assert_ne!(0, CALL_COUNT.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn send_data_command() {
+        let (mut client, mut tx, rx) = setup!(Config::new());
+        let cmd = RawSendCmd {
+            socket: 3,
+            data: b"hello",
+        };
+
+        let sent = tokio::spawn(async move {
+            let preamble = tx.next_message_pure().await;
+            rx.signal_prompt(b'>').unwrap();
+            let payload = tx.next_message_pure().await;
+            rx.signal_response(Ok(&[])).unwrap();
+            (preamble, payload)
+        });
+
+        tokio::task::spawn_blocking(move || {
+            assert_eq!(Ok(NoResponse), client.send(&cmd));
+        })
+        .await
+        .unwrap();
+
+        let (preamble, payload) = sent.await.unwrap();
+        assert_eq!("AT+USOWR=3,5\r", &preamble);
+        assert_eq!("hello", &payload);
+    }
+
+    #[tokio::test]
+    async fn send_data_command_returns_immediate_response_without_payload() {
+        let (mut client, mut tx, rx) = setup!(Config::new());
+        let cmd = RawSendCmd {
+            socket: 3,
+            data: b"hello",
+        };
+
+        let sent = tokio::spawn(async move {
+            let preamble = tx.next_message_pure().await;
+            rx.signal_response(Ok(&[])).unwrap();
+            preamble
+        });
+
+        tokio::task::spawn_blocking(move || {
+            assert_eq!(Ok(NoResponse), client.send(&cmd));
+        })
+        .await
+        .unwrap();
+
+        let preamble = sent.await.unwrap();
+        assert_eq!("AT+USOWR=3,5\r", &preamble);
     }
 
     // #[test]

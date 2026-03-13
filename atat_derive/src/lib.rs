@@ -172,6 +172,9 @@ pub fn derive_atat_enum(input: TokenStream) -> TokenStream {
 ///   instead of using default `atat::serde_at::from_slice` function. The
 ///   passed functions needs to have a signature `Result<Response, E>` where
 ///   `Response` is the type of the response passed in the `at_cmd`
+/// - `expects_prompt`: **bool** Whether the command should wait for a modem
+///   prompt, write a raw payload, and then parse the final response (default
+///   false).
 ///
 /// ### Field attribute (`#[at_arg(..)]`)
 /// The `AtatCmd` derive macro comes with an optional field attribute
@@ -182,7 +185,11 @@ pub fn derive_atat_enum(input: TokenStream) -> TokenStream {
 ///   string. (eg. for command `AT+CMD=a,b`, field `a` would have `position = 1`
 ///   and field `b` would have `position = 2`) (defaults to order of the fields
 ///   in the struct)
-#[proc_macro_derive(AtatCmd, attributes(at_cmd, at_arg))]
+///
+/// A field can additionally be marked with `#[at_data]` to exclude it from the
+/// serialized command line and instead send it as the raw payload after the
+/// prompt when `expects_prompt = true` is enabled.
+#[proc_macro_derive(AtatCmd, attributes(at_cmd, at_arg, at_data))]
 pub fn derive_atat_cmd(input: TokenStream) -> TokenStream {
     cmd::atat_cmd(input)
 }
@@ -192,7 +199,7 @@ pub fn derive_atat_cmd(input: TokenStream) -> TokenStream {
 /// [`atat::AtatLen`]: ../atat/derive/trait.AtatLen.html
 ///
 /// This requires all of the fields to also implement [`atat::AtatLen`]
-#[proc_macro_derive(AtatLen, attributes(at_arg))]
+#[proc_macro_derive(AtatLen, attributes(at_arg, at_data))]
 pub fn derive_atat_len(input: TokenStream) -> TokenStream {
     len::atat_len(input)
 }
