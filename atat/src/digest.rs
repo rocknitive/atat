@@ -228,16 +228,16 @@ pub mod parser {
     use core::str::FromStr;
 
     use nom::{
-        IResult,
         branch::alt,
         bytes::streaming::tag,
         character::complete,
         combinator::{eof, map, map_res, recognize},
         error::ParseError,
         sequence::tuple,
+        IResult,
     };
 
-    /// Matches the equivalent of regex: "\r\n{token}(:.*)?\r\n"
+    /// Matches the equivalent of regex: "\r\n{token}.*\r\n"
     pub fn urc_helper<'a, T, Error: ParseError<&'a [u8]>>(
         token: T,
     ) -> impl Fn(&'a [u8]) -> IResult<&'a [u8], (&'a [u8], usize), Error>
@@ -246,22 +246,20 @@ pub mod parser {
         T: nom::InputLength + Clone + nom::InputTake + nom::InputIter,
     {
         move |i| {
-            let (i, (le, urc_tag)) = tuple((
-                complete::line_ending,
-                recognize(alt((
-                    tuple((tag(token.clone()), tag(":"), take_until_including("\r\n"))),
-                    tuple((
-                        tag(token.clone()),
-                        tag("\r\n"),
-                        nom::combinator::success((&b""[..], &b""[..])),
-                    )),
-                ))),
-            ))(i)?;
+            let (i, le) = complete::line_ending(i)?;
+            let urc_start = i;
+            let (i, _) = tag(token.clone())(i)?;
 
-            Ok((
-                i,
-                (trim_ascii_whitespace(urc_tag), le.len() + urc_tag.len()),
-            ))
+            let line_len = i
+                .windows(2)
+                .position(|window| window == b"\r\n")
+                .ok_or_else(|| nom::Err::Incomplete(nom::Needed::Unknown))?;
+
+            let consumed = le.len() + token.input_len() + line_len + 2;
+            let urc_tag = &urc_start[..token.input_len() + line_len];
+            let rest = &i[line_len + 2..];
+
+            Ok((rest, (trim_ascii_whitespace(urc_tag), consumed)))
         }
     }
 
@@ -455,8 +453,8 @@ pub mod parser {
     }
 
     /// Matches the equivalent of regex: "\r\n(ERROR)|(COMMAND NOT SUPPORT)\r\n"
-    fn generic_error<'a, Error: ParseError<&'a [u8]>>()
-    -> impl Fn(&'a [u8]) -> IResult<&'a [u8], usize, Error> {
+    fn generic_error<'a, Error: ParseError<&'a [u8]>>(
+    ) -> impl Fn(&'a [u8]) -> IResult<&'a [u8], usize, Error> {
         move |i: &[u8]| {
             let (i, (data, tag)) = alt((
                 take_until_including("\r\nERROR\r\n"),
@@ -468,8 +466,8 @@ pub mod parser {
     }
 
     /// Matches the equivalent of regex: "\r\n(NO CARRIER)|(BUSY)|(NO ANSWER)|(NO DIALTONE)\r\n"
-    fn connection_error<'a, Error: ParseError<&'a [u8]>>()
-    -> impl Fn(&'a [u8]) -> IResult<&'a [u8], (ConnectionError, usize), Error> {
+    fn connection_error<'a, Error: ParseError<&'a [u8]>>(
+    ) -> impl Fn(&'a [u8]) -> IResult<&'a [u8], (ConnectionError, usize), Error> {
         move |i: &[u8]| {
             alt((
                 map(
@@ -534,6 +532,7 @@ mod test {
                 urc_helper("+UUSORD"),
                 urc_helper("+CIEV"),
                 urc_helper("+CGREG"),
+                urc_helper("+QIURC: \"dnsgip\","),
             ))(buf)?;
 
             Ok(r)
@@ -995,6 +994,23 @@ mod test {
         assert_eq!(
             (res, bytes),
             (DigestResult::Urc(b"+UUSORD: 3,16,\"16 bytes of data\""), 36)
+        );
+        buf.rotate_left(bytes);
+        buf.truncate(buf.len() - bytes);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn urc_digest_supports_full_prefix_tokens() {
+        let mut digester = AtDigester::<UrcTestParser>::new();
+        let mut buf = heapless::Vec::<u8, TEST_RX_BUF_LEN>::new();
+
+        buf.extend_from_slice(b"\r\n+QIURC: \"dnsgip\",0,1,60\r\n")
+            .unwrap();
+        let (res, bytes) = digester.digest(&buf);
+        assert_eq!(
+            (res, bytes),
+            (DigestResult::Urc(b"+QIURC: \"dnsgip\",0,1,60"), 27)
         );
         buf.rotate_left(bytes);
         buf.truncate(buf.len() - bytes);
