@@ -153,6 +153,7 @@ impl<P: Parser> Digester for AtDigester<P> {
         // Custom successful replies first, if any
         match (self.custom_success)(buf) {
             Ok((response, len)) => {
+                self.response_in_flight = false;
                 return (
                     DigestResult::Response(Ok(response)),
                     len + space_and_echo_bytes,
@@ -190,6 +191,7 @@ impl<P: Parser> Digester for AtDigester<P> {
         // Custom error matches first, if any
         match (self.custom_error)(buf) {
             Ok((response, len)) => {
+                self.response_in_flight = false;
                 return (
                     DigestResult::Response(Err(InternalError::Custom(response))),
                     len + space_and_echo_bytes,
@@ -201,6 +203,7 @@ impl<P: Parser> Digester for AtDigester<P> {
 
         // Generic error matches
         if let Ok((_, (result, len))) = parser::error_response(buf) {
+            self.response_in_flight = false;
             return (result, len + space_and_echo_bytes);
         }
 
@@ -1350,5 +1353,112 @@ mod test {
             (DigestResult::Response(Ok(b"+CIPRXGET: 2,0,2,0\r\n> ")), 30),
             digester.digest(b"\r\n+CIPRXGET: 2,0,2,0\r\n> \r\nOK\r\n")
         );
+    }
+
+    #[test]
+    fn custom_success_clears_response_in_flight() {
+        let mut digester = AtDigester::<UrcTestParser>::new().with_custom_success(|buf| {
+            const RESPONSE: &[u8] = b"\r\nSEND OK\r\n";
+
+            if buf.starts_with(RESPONSE) {
+                Ok((&[], RESPONSE.len()))
+            } else if RESPONSE.starts_with(buf) {
+                Err(ParseError::Incomplete)
+            } else {
+                Err(ParseError::NoMatch)
+            }
+        });
+        let mut buf = heapless::Vec::<u8, TEST_RX_BUF_LEN>::new();
+
+        buf.extend_from_slice(b"AT+QISEND=0,5\r\n").unwrap();
+        let (res, bytes) = digester.digest(&buf);
+        assert_eq!((res, bytes), (DigestResult::None, 13));
+        buf.rotate_left(bytes);
+        buf.truncate(buf.len() - bytes);
+
+        buf.extend_from_slice(b"\r\nSEND OK\r\n").unwrap();
+        let (res, bytes) = digester.digest(&buf);
+        assert_eq!((res, bytes), (DigestResult::Response(Ok(b"")), 13));
+        buf.rotate_left(bytes);
+        buf.truncate(buf.len() - bytes);
+        assert!(buf.is_empty());
+
+        buf.extend_from_slice(b"\r\n+UUSORD: 0,5\r\n").unwrap();
+        let (res, bytes) = digester.digest(&buf);
+        assert_eq!((res, bytes), (DigestResult::Urc(b"+UUSORD: 0,5"), 16));
+        buf.rotate_left(bytes);
+        buf.truncate(buf.len() - bytes);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn custom_error_clears_response_in_flight() {
+        let mut digester = AtDigester::<UrcTestParser>::new().with_custom_error(|buf| {
+            const RESPONSE: &[u8] = b"\r\nSEND FAIL\r\n";
+
+            if buf.starts_with(RESPONSE) {
+                Ok((b"SEND FAIL", RESPONSE.len()))
+            } else if RESPONSE.starts_with(buf) {
+                Err(ParseError::Incomplete)
+            } else {
+                Err(ParseError::NoMatch)
+            }
+        });
+        let mut buf = heapless::Vec::<u8, TEST_RX_BUF_LEN>::new();
+
+        buf.extend_from_slice(b"AT+QISEND=0,5\r\n").unwrap();
+        let (res, bytes) = digester.digest(&buf);
+        assert_eq!((res, bytes), (DigestResult::None, 13));
+        buf.rotate_left(bytes);
+        buf.truncate(buf.len() - bytes);
+
+        buf.extend_from_slice(b"\r\nSEND FAIL\r\n").unwrap();
+        let (res, bytes) = digester.digest(&buf);
+        assert_eq!(
+            (res, bytes),
+            (
+                DigestResult::Response(Err(InternalError::Custom(b"SEND FAIL"))),
+                15,
+            )
+        );
+        buf.rotate_left(bytes);
+        buf.truncate(buf.len() - bytes);
+        assert!(buf.is_empty());
+
+        buf.extend_from_slice(b"\r\n+UUSORD: 0,5\r\n").unwrap();
+        let (res, bytes) = digester.digest(&buf);
+        assert_eq!((res, bytes), (DigestResult::Urc(b"+UUSORD: 0,5"), 16));
+        buf.rotate_left(bytes);
+        buf.truncate(buf.len() - bytes);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn generic_error_clears_response_in_flight() {
+        let mut digester = AtDigester::<UrcTestParser>::new();
+        let mut buf = heapless::Vec::<u8, TEST_RX_BUF_LEN>::new();
+
+        buf.extend_from_slice(b"AT+QISEND=0,5\r\n").unwrap();
+        let (res, bytes) = digester.digest(&buf);
+        assert_eq!((res, bytes), (DigestResult::None, 13));
+        buf.rotate_left(bytes);
+        buf.truncate(buf.len() - bytes);
+
+        buf.extend_from_slice(b"\r\nERROR\r\n").unwrap();
+        let (res, bytes) = digester.digest(&buf);
+        assert_eq!(
+            (res, bytes),
+            (DigestResult::Response(Err(InternalError::Error)), 11)
+        );
+        buf.rotate_left(bytes);
+        buf.truncate(buf.len() - bytes);
+        assert!(buf.is_empty());
+
+        buf.extend_from_slice(b"\r\n+UUSORD: 0,5\r\n").unwrap();
+        let (res, bytes) = digester.digest(&buf);
+        assert_eq!((res, bytes), (DigestResult::Urc(b"+UUSORD: 0,5"), 16));
+        buf.rotate_left(bytes);
+        buf.truncate(buf.len() - bytes);
+        assert!(buf.is_empty());
     }
 }
