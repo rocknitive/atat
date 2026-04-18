@@ -20,7 +20,8 @@ pub fn atat_urc(input: TokenStream) -> TokenStream {
     let (match_arms, digest_arms): (Vec<_>, Vec<_>) = variants.iter().map(|variant| {
         let UrcAttributes {
             code,
-            parse
+            parse,
+            digest,
         } = variant.attrs.at_urc.clone().unwrap_or_else(|| {
             panic!(
                 "missing #[at_urc(...)] attribute",
@@ -50,13 +51,39 @@ pub fn atat_urc(input: TokenStream) -> TokenStream {
             }
         };
 
-        let digest_arm = if let Some(parse_fn) = parse {
+        let digest_arm = if let Some(digest_fn) = digest {
             quote! {
-                #parse_fn(&#code[..]),
+                match #digest_fn(buf) {
+                    Ok(r) => return Ok(r),
+                    Err(atat::digest::ParseError::Incomplete) => {
+                        return Err(atat::digest::ParseError::Incomplete)
+                    }
+                    Err(atat::digest::ParseError::NoMatch) => {}
+                }
+            }
+        } else if let Some(parse_fn) = parse {
+            quote! {
+                match #parse_fn(&#code[..])(buf) {
+                    Ok((_, r)) => return Ok(r),
+                    Err(e) => match atat::digest::ParseError::from(e) {
+                        atat::digest::ParseError::Incomplete => {
+                            return Err(atat::digest::ParseError::Incomplete)
+                        }
+                        atat::digest::ParseError::NoMatch => {}
+                    }
+                }
             }
         } else {
             quote! {
-                atat::digest::parser::urc_helper(&#code[..]),
+                match atat::digest::parser::urc_helper(&#code[..])(buf) {
+                    Ok((_, r)) => return Ok(r),
+                    Err(e) => match atat::digest::ParseError::from(e) {
+                        atat::digest::ParseError::Incomplete => {
+                            return Err(atat::digest::ParseError::Incomplete)
+                        }
+                        atat::digest::ParseError::NoMatch => {}
+                    }
+                }
             }
         };
 
@@ -86,13 +113,9 @@ pub fn atat_urc(input: TokenStream) -> TokenStream {
             fn parse<'a>(
                 buf: &'a [u8],
             ) -> Result<(&'a [u8], usize), atat::digest::ParseError> {
-                let (_, r) = atat::nom::branch::alt((
-                    #(
-                        #digest_arms
-                    )*
-                ))(buf)?;
+                #(#digest_arms)*
 
-                Ok(r)
+                Err(atat::digest::ParseError::NoMatch)
             }
         }
     })

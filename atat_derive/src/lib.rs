@@ -72,6 +72,10 @@ pub fn derive_atat_resp(input: TokenStream) -> TokenStream {
 /// - `parse`: **function** Function that should be used to parse for the URC
 ///   instead of using default `atat::digest::parser::urc_helper` function. The
 ///   passed functions need to have a valid `nom` signature `(arguments) -> impl Fn(Input) -> IResult<Input, Output, Error>`.
+/// - `digest`: **function** Function that should be used for low-level URC
+///   framing with signature `fn(&[u8]) -> Result<(&[u8], usize), atat::digest::ParseError>`.
+///   This is useful for URCs with payload sizes that must be read from the
+///   header before the full frame boundary is known.
 #[proc_macro_derive(AtatUrc, attributes(at_urc))]
 pub fn derive_atat_urc(input: TokenStream) -> TokenStream {
     urc::atat_urc(input)

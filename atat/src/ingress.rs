@@ -343,6 +343,9 @@ mod tests {
 
         #[at_urc(b"+CREG", parse = custom_cxreg_parse)]
         Creg,
+
+        #[at_urc(b"+QIURC", digest = qiurc_recv_digest)]
+        QIurcRecv,
     }
 
     /// Example custom parse function, that validates the number of arguments in
@@ -429,6 +432,59 @@ mod tests {
         }
     }
 
+    fn qiurc_recv_digest(buf: &[u8]) -> Result<(&[u8], usize), atat::digest::ParseError> {
+        const PREFIX: &[u8] = b"\r\n+QIURC: \"recv\",";
+
+        if !PREFIX.starts_with(buf) && !buf.starts_with(PREFIX) {
+            return Err(atat::digest::ParseError::NoMatch);
+        }
+
+        if !buf.starts_with(PREFIX) {
+            return Err(atat::digest::ParseError::Incomplete);
+        }
+
+        let mut idx = PREFIX.len();
+
+        let socket_end = buf[idx..]
+            .iter()
+            .position(|&b| b == b',')
+            .map(|pos| idx + pos)
+            .ok_or(atat::digest::ParseError::Incomplete)?;
+        let _socket = core::str::from_utf8(&buf[idx..socket_end])
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .ok_or(atat::digest::ParseError::NoMatch)?;
+
+        idx = socket_end + 1;
+        let len_end = buf[idx..]
+            .iter()
+            .position(|&b| b == b'\r')
+            .map(|pos| idx + pos)
+            .ok_or(atat::digest::ParseError::Incomplete)?;
+        let payload_len = core::str::from_utf8(&buf[idx..len_end])
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .ok_or(atat::digest::ParseError::NoMatch)?;
+
+        if buf.get(len_end..len_end + 2) != Some(b"\r\n") {
+            return Err(atat::digest::ParseError::Incomplete);
+        }
+
+        let payload_start = len_end + 2;
+        let payload_end = payload_start + payload_len;
+        let total_len = payload_end + 2;
+
+        if buf.len() < total_len {
+            return Err(atat::digest::ParseError::Incomplete);
+        }
+
+        if &buf[payload_end..total_len] != b"\r\n" {
+            return Err(atat::digest::ParseError::NoMatch);
+        }
+
+        Ok((&buf[2..payload_end], total_len))
+    }
+
     #[test]
     fn test_custom_parse_cxreg() {
         let creg_resp = b"\r\n+CREG: 2,5,\"9E9A\",\"019624BD\",2\r\n";
@@ -472,6 +528,28 @@ mod tests {
         let response = res_slot.try_get().unwrap();
         let response: &Response<100> = &response.borrow();
         assert_eq!(&Response::default(), response);
+    }
+
+    #[test]
+    fn advance_can_process_length_delimited_urc_payload() {
+        let res_slot = ResponseSlot::<128>::new();
+        let urc_channel = UrcChannel::<Urc, 10, 1>::new();
+        let mut buf = [0; 128];
+
+        let mut ingress: Ingress<_, Urc, 128, 10, 1> =
+            Ingress::new(AtDigester::<Urc>::new(), &mut buf, &res_slot, &urc_channel);
+
+        let mut sub = urc_channel.subscribe().unwrap();
+
+        let frame =
+            b"\r\n+QIURC: \"recv\",0,17\r\nhE\x18\xbd)\x9f\x13\r\xad\xfb\xd70\xff)\x97\xb3i\r\n";
+        let write_buf = ingress.write_buf();
+        write_buf[..frame.len()].copy_from_slice(frame);
+
+        ingress.try_advance(frame.len()).unwrap();
+
+        assert_eq!(Urc::QIurcRecv, sub.try_next_message_pure().unwrap());
+        assert_eq!(0, ingress.pos);
     }
 
     #[tokio::test]

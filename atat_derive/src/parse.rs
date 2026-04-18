@@ -51,6 +51,7 @@ pub struct DataAttributes {
 pub struct UrcAttributes {
     pub code: LitByteStr,
     pub parse: Option<Path>,
+    pub digest: Option<Path>,
 }
 
 /// Parsed attributes of `#[at_enum(..)]`
@@ -250,7 +251,11 @@ impl Parse for UrcAttributes {
             }
         };
 
-        let mut at_urc = Self { code, parse: None };
+        let mut at_urc = Self {
+            code,
+            parse: None,
+            digest: None,
+        };
 
         while input.parse::<syn::token::Comma>().is_ok() {
             let optional = input.parse::<syn::MetaNameValue>()?;
@@ -260,6 +265,13 @@ impl Parse for UrcAttributes {
                         at_urc.parse = Some(path);
                     }
                     _ => return Err(Error::new(input.span(), "expected function for 'parse'")),
+                }
+            } else if optional.path.is_ident("digest") {
+                match optional.value {
+                    Expr::Path(ExprPath { path, .. }) => {
+                        at_urc.digest = Some(path);
+                    }
+                    _ => return Err(Error::new(input.span(), "expected function for 'digest'")),
                 }
             }
         }
