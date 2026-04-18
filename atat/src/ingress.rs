@@ -344,7 +344,7 @@ mod tests {
         #[at_urc(b"+CREG", parse = custom_cxreg_parse)]
         Creg,
 
-        #[at_urc(b"+QIURC", digest = qiurc_recv_digest)]
+        #[at_urc(b"+QIURC: \"recv\",", digest = qiurc_recv_digest)]
         QIurcRecv,
     }
 
@@ -485,6 +485,26 @@ mod tests {
         Ok((&buf[2..payload_end], total_len))
     }
 
+    fn qiurc_dnsgip_digest(buf: &[u8]) -> Result<(&[u8], usize), atat::digest::ParseError> {
+        const PREFIX: &[u8] = b"\r\n+QIURC: \"dnsgip\",";
+
+        if !PREFIX.starts_with(buf) && !buf.starts_with(PREFIX) {
+            return Err(atat::digest::ParseError::NoMatch);
+        }
+
+        if !buf.starts_with(PREFIX) {
+            return Err(atat::digest::ParseError::Incomplete);
+        }
+
+        let line_end = buf[PREFIX.len()..]
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .map(|pos| PREFIX.len() + pos)
+            .ok_or(atat::digest::ParseError::Incomplete)?;
+
+        Ok((&buf[2..line_end], line_end + 2))
+    }
+
     #[test]
     fn test_custom_parse_cxreg() {
         let creg_resp = b"\r\n+CREG: 2,5,\"9E9A\",\"019624BD\",2\r\n";
@@ -549,6 +569,36 @@ mod tests {
         ingress.try_advance(frame.len()).unwrap();
 
         assert_eq!(Urc::QIurcRecv, sub.try_next_message_pure().unwrap());
+        assert_eq!(0, ingress.pos);
+    }
+
+    #[test]
+    fn advance_can_distinguish_qiurc_subtypes_by_full_prefix() {
+        #[derive(AtatUrc, Clone, PartialEq, Debug)]
+        enum QiurcUrc {
+            #[at_urc(b"+QIURC: \"recv\",", digest = qiurc_recv_digest)]
+            Recv,
+
+            #[at_urc(b"+QIURC: \"dnsgip\",", digest = qiurc_dnsgip_digest)]
+            DnsGip,
+        }
+
+        let res_slot = ResponseSlot::<128>::new();
+        let urc_channel = UrcChannel::<QiurcUrc, 10, 1>::new();
+        let mut buf = [0; 128];
+
+        let mut ingress: Ingress<_, QiurcUrc, 128, 10, 1> =
+            Ingress::new(AtDigester::<QiurcUrc>::new(), &mut buf, &res_slot, &urc_channel);
+
+        let mut sub = urc_channel.subscribe().unwrap();
+
+        let frame = b"\r\n+QIURC: \"dnsgip\",0,1,60\r\n";
+        let write_buf = ingress.write_buf();
+        write_buf[..frame.len()].copy_from_slice(frame);
+
+        ingress.try_advance(frame.len()).unwrap();
+
+        assert_eq!(QiurcUrc::DnsGip, sub.try_next_message_pure().unwrap());
         assert_eq!(0, ingress.pos);
     }
 

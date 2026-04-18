@@ -1,7 +1,7 @@
 use crate::proc_macro::TokenStream;
 
 use quote::quote;
-use syn::{Fields, parse_macro_input};
+use syn::{parse_macro_input, Fields};
 
 use crate::parse::{ParseInput, UrcAttributes};
 
@@ -17,7 +17,7 @@ pub fn atat_urc(input: TokenStream) -> TokenStream {
 
     assert!(!variants.is_empty(), "there must be at least one variant");
 
-    let (match_arms, digest_arms): (Vec<_>, Vec<_>) = variants.iter().map(|variant| {
+    let (dispatch_arms, digest_arms): (Vec<_>, Vec<_>) = variants.iter().map(|variant| {
         let UrcAttributes {
             code,
             parse,
@@ -29,7 +29,7 @@ pub fn atat_urc(input: TokenStream) -> TokenStream {
         });
 
         let variant_ident = variant.ident.clone();
-        let parse_arm = match variant.fields.clone() {
+        let dispatch_arm = match variant.fields.clone() {
             Some(Fields::Named(_)) => {
                 panic!("cannot handle named enum variants")
             }
@@ -38,12 +38,16 @@ pub fn atat_urc(input: TokenStream) -> TokenStream {
                 let first_field = field_iter.next().expect("variant must have exactly one field");
                 assert!(field_iter.next().is_none(), "cannot handle variants with more than one field");
                 quote! {
-                    #code => #ident::#variant_ident(atat::serde_at::from_slice::<#first_field>(&resp).ok()?),
+                    if resp.starts_with(&#code[..]) {
+                        return Some(#ident::#variant_ident(atat::serde_at::from_slice::<#first_field>(&resp).ok()?));
+                    }
                 }
             }
             Some(Fields::Unit) => {
                 quote! {
-                    #code => #ident::#variant_ident,
+                    if resp.starts_with(&#code[..]) {
+                        return Some(#ident::#variant_ident);
+                    }
                 }
             }
             None => {
@@ -87,7 +91,7 @@ pub fn atat_urc(input: TokenStream) -> TokenStream {
             }
         };
 
-        (parse_arm, digest_arm)
+        (dispatch_arm, digest_arm)
     }).unzip();
 
     TokenStream::from(quote! {
@@ -97,14 +101,11 @@ pub fn atat_urc(input: TokenStream) -> TokenStream {
 
             #[inline]
             fn parse(resp: &[u8]) -> Option<Self::Response> {
-                // FIXME: this should be more generic than ':' (Split using #code?)
-                let index = resp.iter().position(|&x| x == b':').unwrap_or(resp.len());
-                Some(match &resp[..index] {
-                    #(
-                        #match_arms
-                    )*
-                    _ => return None
-                })
+                #(
+                    #dispatch_arms
+                )*
+
+                None
             }
         }
 
