@@ -180,10 +180,12 @@ impl<'a> Deserializer<'a> {
                 self.index = self.slice.len();
                 return Ok(&self.slice[start..]);
             } else if let Some(c) = self.peek() {
-                if (c as char).is_ascii() && c >= 32 {
+                if c == b',' {
+                    return Ok(&self.slice[start..self.index]);
+                } else if (c as char).is_ascii() && c >= 32 {
                     self.eat_char();
                 } else {
-                    return Err(Error::EofWhileParsingString);
+                    return Ok(&self.slice[start..self.index]);
                 }
             } else {
                 return Ok(&self.slice[start..self.index]);
@@ -472,7 +474,10 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
             }
             _ => {
                 if (peek as char).is_ascii() && peek >= 32 {
-                    visitor.visit_bytes(self.parse_bytes()?)
+                    let bytes = self.parse_bytes()?;
+                    let value =
+                        core::str::from_utf8(bytes).map_err(|_| Error::InvalidUnicodeCodePoint)?;
+                    visitor.visit_borrowed_str(value)
                 } else {
                     Err(Error::InvalidType)
                 }
@@ -872,6 +877,57 @@ mod tests {
             crate::from_str("+CCID: \"89883030000005421166\""),
             Ok(StringTest {
                 string: String::try_from("89883030000005421166").unwrap()
+            })
+        );
+    }
+
+    #[test]
+    fn simple_unquoted_string() {
+        #[derive(Clone, Debug, Deserialize, PartialEq)]
+        pub struct StringTest {
+            pub string: String<32>,
+        }
+
+        assert_eq!(
+            crate::from_str("+TEST: abc"),
+            Ok(StringTest {
+                string: String::try_from("abc").unwrap()
+            })
+        );
+    }
+
+    #[test]
+    fn simple_unquoted_ip_strings() {
+        #[derive(Clone, Debug, Deserialize, PartialEq)]
+        pub struct IpStrings {
+            pub ipv4: String<32>,
+            pub ipv6: String<64>,
+        }
+
+        assert_eq!(
+            crate::from_str("+TEST: 8.8.8.8,2001:db8::1"),
+            Ok(IpStrings {
+                ipv4: String::try_from("8.8.8.8").unwrap(),
+                ipv6: String::try_from("2001:db8::1").unwrap(),
+            })
+        );
+    }
+
+    #[test]
+    fn mixed_unquoted_fields_with_strings() {
+        #[derive(Clone, Debug, Deserialize, PartialEq)]
+        pub struct DnsServers {
+            pub context_id: u8,
+            pub primary: String<32>,
+            pub secondary: String<32>,
+        }
+
+        assert_eq!(
+            crate::from_str("+QIDNSCFG: 1,8.8.8.8,1.1.1.1"),
+            Ok(DnsServers {
+                context_id: 1,
+                primary: String::try_from("8.8.8.8").unwrap(),
+                secondary: String::try_from("1.1.1.1").unwrap(),
             })
         );
     }
