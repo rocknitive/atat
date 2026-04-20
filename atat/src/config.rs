@@ -5,7 +5,7 @@ use embassy_time::{Duration, Instant};
 /// client.
 ///
 /// [`Command`]: enum.Command.html
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone)]
 pub struct Config {
     pub(crate) cmd_cooldown: Duration,
     pub(crate) tx_timeout: Duration,

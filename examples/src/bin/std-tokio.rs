@@ -13,15 +13,6 @@ const INGRESS_BUF_SIZE: usize = 1024;
 const URC_CAPACITY: usize = 128;
 const URC_SUBSCRIBERS: usize = 3;
 
-macro_rules! singleton {
-    ($val:expr) => {{
-        type T = impl Sized;
-        static STATIC_CELL: StaticCell<T> = StaticCell::new();
-        let (x,) = STATIC_CELL.init(($val,));
-        x
-    }};
-}
-
 #[tokio::main]
 async fn main() -> ! {
     env_logger::init();
