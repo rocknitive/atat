@@ -3,7 +3,7 @@
 use core::fmt;
 
 use heapless_bytes::Bytes;
-use serde::{Deserialize, Deserializer, de};
+use serde::{de, Deserialize, Deserializer};
 
 /// Structure for parsing a length delimited bytes payload.
 ///
@@ -52,27 +52,37 @@ impl<'de, const N: usize, const S: usize> de::Visitor<'de> for LengthDelimitedVi
     where
         E: serde::de::Error,
     {
-        v.iter()
+        let slice_len = v.len();
+        let pos = v
+            .iter()
             .position(|&c| !c.is_ascii_digit())
-            .ok_or_else(|| de::Error::custom("expected a comma"))
-            .and_then(|pos| {
-                let len = parse_len(&v[0..pos])
-                    .map_err(|_| de::Error::custom("expected an unsigned int"))?;
-                // +S to skip the separator after the length.
-                let mut start = pos + S;
-                let mut end = start + len;
-                // Check if payload is surrounded by double quotes not included in len.
-                let slice_len = v.len();
-                if slice_len >= (end + 2) && (v[start] == b'"' && v[end + 1] == b'"') {
-                    start += 1; // Extra +1 to remove first quote (")
-                    end += 1; // Move end by 1 to compensate for the quote.
-                }
-                Ok(LengthDelimited {
-                    len,
-                    bytes: Bytes::try_from(&v[start..end])
-                        .map_err(|_| de::Error::custom("incorrect slice size"))?,
-                })
+            .unwrap_or(slice_len);
+        let len =
+            parse_len(&v[0..pos]).map_err(|_| de::Error::custom("expected an unsigned int"))?;
+        if len == 0 {
+            return Ok(LengthDelimited {
+                len,
+                bytes: Default::default(),
+            });
+        }
+        // +S to skip the separator after the length.
+        let mut start = pos + S;
+        let mut end = start + len;
+        // Check if payload is surrounded by double quotes not included in len.
+        let slice_len = v.len();
+        if slice_len >= (end + 2) && (v[start] == b'"' && v[end + 1] == b'"') {
+            start += 1; // Extra +1 to remove first quote (")
+            end += 1; // Move end by 1 to compensate for the quote.
+        }
+        if end > slice_len {
+            Err(de::Error::custom("invalid payload length"))
+        } else {
+            Ok(LengthDelimited {
+                len,
+                bytes: Bytes::try_from(&v[start..end])
+                    .map_err(|_| de::Error::custom("incorrect slice size"))?,
             })
+        }
     }
 }
 

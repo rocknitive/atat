@@ -1046,6 +1046,12 @@ mod tests {
         assert_eq!(res.id, -1);
         assert_eq!(res.payload.len, 9);
         assert_eq!(res.payload.bytes, Bytes::<32>::from(b"ABCD,1234"));
+
+        let res: PayloadResponse = crate::from_slice(b"1,-1,0\r\n").unwrap();
+        assert_eq!(res.ctx, 1);
+        assert_eq!(res.id, -1);
+        assert_eq!(res.payload.len, 0);
+        assert_eq!(res.payload.bytes, Bytes::<32>::from(b""));
     }
 
     #[test]
