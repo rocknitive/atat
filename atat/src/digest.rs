@@ -124,7 +124,7 @@ impl<P: Parser> Digester for AtDigester<P> {
             Ok((buf, echo)) => {
                 if let Some(e) = echo {
                     let is_cmd_echo =
-                        parser::take_until_including::<_, _, nom::error::Error<_>>("AT+")(e)
+                        parser::take_until_including::<_, _, nom::error::Error<_>>("AT")(e)
                             .map(|(a, _)| a.len() > 0)
                             .unwrap_or_default();
                     if is_cmd_echo {
@@ -146,6 +146,10 @@ impl<P: Parser> Digester for AtDigester<P> {
                 Ok((urc, len)) => return (DigestResult::Urc(urc), len + space_and_echo_bytes),
                 Err(ParseError::Incomplete) => return incomplete,
                 _ => {}
+            }
+
+            if let Some(echo_start) = parser::find_line_starting_with_at(buf) {
+                return (DigestResult::None, space_and_echo_bytes + echo_start);
             }
         }
 
@@ -380,6 +384,31 @@ pub mod parser {
         }
 
         recognize(nom::bytes::complete::take_until("\r\n"))(buf)
+    }
+
+    pub fn find_line_starting_with_at(buf: &[u8]) -> Option<usize> {
+        if buf.starts_with(b"AT") {
+            return None;
+        }
+
+        let mut search_from = 0;
+        while let Some(line_end) = buf[search_from..]
+            .windows(2)
+            .position(|window| window == b"\r\n")
+        {
+            let next_line_start = search_from + line_end + 2;
+            if next_line_start >= buf.len() {
+                return None;
+            }
+
+            if buf[next_line_start..].starts_with(b"AT") {
+                return Some(next_line_start);
+            }
+
+            search_from = next_line_start;
+        }
+
+        None
     }
 
     pub fn take_until_including<T, Input, Error: ParseError<Input>>(
@@ -892,6 +921,46 @@ mod test {
             (res, bytes),
             (DigestResult::Response(Ok(b"+USORD: 0,4,\"90030002\"")), 43)
         );
+        buf.rotate_left(bytes);
+        buf.truncate(buf.len() - bytes);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn unknown_line_prefixed_with_crlf_before_echo_is_dropped() {
+        let mut digester = AtDigester::<UrcTestParser>::new();
+        let mut buf = heapless::Vec::<u8, TEST_RX_BUF_LEN>::new();
+
+        buf.extend_from_slice(b"\r\n+QIND: SMS DONE\r\nAT+QCFG=\"band\",3,80084,80084,1\r\r\nOK\r\n")
+            .unwrap();
+
+        let (res, bytes) = digester.digest(&buf);
+        assert_eq!((res, bytes), (DigestResult::None, 19));
+        buf.rotate_left(bytes);
+        buf.truncate(buf.len() - bytes);
+
+        let (res, bytes) = digester.digest(&buf);
+        assert_eq!((res, bytes), (DigestResult::Response(Ok(b"")), 37));
+        buf.rotate_left(bytes);
+        buf.truncate(buf.len() - bytes);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn unknown_line_without_crlf_before_echo_is_dropped() {
+        let mut digester = AtDigester::<UrcTestParser>::new();
+        let mut buf = heapless::Vec::<u8, TEST_RX_BUF_LEN>::new();
+
+        buf.extend_from_slice(b"+QIND: SMS DONE\r\nAT+QCFG=\"band\",3,80084,80084,1\r\r\nOK\r\n")
+            .unwrap();
+
+        let (res, bytes) = digester.digest(&buf);
+        assert_eq!((res, bytes), (DigestResult::None, 17));
+        buf.rotate_left(bytes);
+        buf.truncate(buf.len() - bytes);
+
+        let (res, bytes) = digester.digest(&buf);
+        assert_eq!((res, bytes), (DigestResult::Response(Ok(b"")), 37));
         buf.rotate_left(bytes);
         buf.truncate(buf.len() - bytes);
         assert!(buf.is_empty());
