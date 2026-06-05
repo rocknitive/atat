@@ -729,14 +729,10 @@ impl fmt::Display for Error {
     }
 }
 
-fn trim_ascii_whitespace(x: &[u8]) -> &[u8] {
-    x.iter().position(|x| !x.is_ascii_whitespace()).map_or_else(
-        || &x[0..0],
-        |from| {
-            let to = x.iter().rposition(|x| !x.is_ascii_whitespace()).unwrap();
-            &x[from..=to]
-        },
-    )
+fn trim_start_ascii_whitespace(x: &[u8]) -> &[u8] {
+    x.iter()
+        .position(|x| !x.is_ascii_whitespace())
+        .map_or_else(|| &x[0..0], |from| &x[from..])
 }
 
 /// Deserializes an instance of type `T` from bytes of AT Response text
@@ -748,7 +744,7 @@ where
     where
         T: de::Deserialize<'a>,
     {
-        let mut de = Deserializer::new(trim_ascii_whitespace(v));
+        let mut de = Deserializer::new(trim_start_ascii_whitespace(v));
         let value = de::Deserialize::deserialize(&mut de)?;
         de.end()?;
         Ok(value)
@@ -1052,6 +1048,22 @@ mod tests {
         assert_eq!(res.id, -1);
         assert_eq!(res.payload.len, 0);
         assert_eq!(res.payload.bytes, Bytes::<32>::from(b""));
+    }
+
+    #[test]
+    fn length_delimited_binary_payload_may_end_with_ascii_whitespace() {
+        #[derive(Clone, Debug, Deserialize)]
+        pub struct PayloadResponse {
+            pub ctx: u8, // Some other params
+            pub id: i8,  // Some other params
+            pub payload: LengthDelimited<32, 2>,
+        }
+
+        let res: PayloadResponse = crate::from_slice(b"1,-1,8\r\ndC\xb5\xe3\xca>^\x0c").unwrap();
+        assert_eq!(res.ctx, 1);
+        assert_eq!(res.id, -1);
+        assert_eq!(res.payload.len, 8);
+        assert_eq!(res.payload.bytes, Bytes::<32>::from(b"dC\xb5\xe3\xca>^\x0c"));
     }
 
     #[test]
