@@ -216,6 +216,7 @@ mod tests {
     }
 
     #[derive(Clone, AtatResp, PartialEq, Debug)]
+    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
     pub struct NoResponse;
 
     pub struct RawSendCmd<'a> {
