@@ -1,11 +1,11 @@
 use embassy_time::{Duration, Instant, TimeoutError};
 use embedded_io::Write;
 
-use super::{AtatClient, blocking_timer::BlockingTimer};
+use super::{blocking_timer::BlockingTimer, AtatClient};
 use crate::{
-    AtatCmd, Config, Error, Response,
     helpers::LossyStr,
     response_slot::{ResponseSlot, ResponseSlotGuard},
+    AtatCmd, Config, Error, Response,
 };
 
 /// Client responsible for handling send, receive and timeout from the
@@ -114,7 +114,7 @@ where
             let timeout = Duration::from_millis(Cmd::MAX_TIMEOUT_MS.into());
             let first_response = {
                 let response = self.wait_response(timeout)?;
-                let response: &Response<INGRESS_BUF_SIZE> = &response.borrow();
+                let response: &Response<INGRESS_BUF_SIZE> = &*response;
 
                 if Cmd::EXPECTS_PROMPT {
                     match response {
@@ -140,7 +140,7 @@ where
             self.start_cooldown_timer();
 
             let response = self.wait_response(timeout)?;
-            let response: &Response<INGRESS_BUF_SIZE> = &response.borrow();
+            let response: &Response<INGRESS_BUF_SIZE> = &*response;
             cmd.parse(response.into())
         }
     }

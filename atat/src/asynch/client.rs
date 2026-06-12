@@ -143,7 +143,7 @@ impl<'a, W: Write, const INGRESS_BUF_SIZE: usize> Client<'a, W, INGRESS_BUF_SIZE
 
         {
             let response = self.wait_response(spec.timeout).await?;
-            let response: &Response<INGRESS_BUF_SIZE> = &response.borrow();
+            let response: &Response<INGRESS_BUF_SIZE> = &*response;
 
             if !spec.expects_prompt || !matches!(response, Response::Prompt(_)) {
                 return Ok(response.clone());
@@ -154,7 +154,7 @@ impl<'a, W: Write, const INGRESS_BUF_SIZE: usize> Client<'a, W, INGRESS_BUF_SIZE
         self.send_payload(spec.payload).await?;
 
         let response = self.wait_response(spec.timeout).await?;
-        let response: &Response<INGRESS_BUF_SIZE> = &response.borrow();
+        let response: &Response<INGRESS_BUF_SIZE> = &*response;
         Ok(response.clone())
     }
 }
