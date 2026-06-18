@@ -5,6 +5,29 @@ pub use client::Client;
 pub use simple_client::SimpleClient;
 
 use crate::{AtatCmd, Error};
+use embassy_time::Duration;
+
+#[derive(Clone, Copy)]
+struct AtatCmdSpec<'a> {
+    timeout: Duration,
+    expects_response_code: bool,
+    expects_prompt: bool,
+    payload: &'a [u8],
+}
+
+impl<'a, Cmd> From<&'a Cmd> for AtatCmdSpec<'a>
+where
+    Cmd: AtatCmd + ?Sized,
+{
+    fn from(cmd: &'a Cmd) -> Self {
+        Self {
+            timeout: Duration::from_millis(Cmd::MAX_TIMEOUT_MS.into()),
+            expects_response_code: Cmd::EXPECTS_RESPONSE_CODE,
+            expects_prompt: Cmd::EXPECTS_PROMPT,
+            payload: cmd.payload(),
+        }
+    }
+}
 
 pub trait AtatClient {
     /// Send an AT command.

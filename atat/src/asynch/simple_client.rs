@@ -1,6 +1,6 @@
-use super::AtatClient;
-use crate::{AtatCmd, Config, DigestResult, Digester, Error, Response, helpers::LossyStr};
-use embassy_time::{Duration, Timer, with_timeout};
+use super::{AtatClient, AtatCmdSpec};
+use crate::{helpers::LossyStr, AtatCmd, Config, DigestResult, Digester, Error, Response};
+use embassy_time::{with_timeout, Timer};
 use embedded_io_async::{Read, Write};
 
 pub struct SimpleClient<'a, RW: Read + Write, D: Digester> {
@@ -139,26 +139,9 @@ impl<'a, RW: Read + Write, D: Digester> SimpleClient<'a, RW, D> {
             cooldown.await
         }
     }
-}
 
-impl<RW: Read + Write, D: Digester> AtatClient for SimpleClient<'_, RW, D> {
-    async fn send<Cmd: AtatCmd>(&mut self, cmd: &Cmd) -> Result<Cmd::Response, Error> {
-        let len = cmd.write(self.buf);
-
-        self.send_request(len).await?;
-        if !Cmd::EXPECTS_RESPONSE_CODE {
-            return cmd.parse(Ok(&[]));
-        }
-        let timeout = Duration::from_millis(Cmd::MAX_TIMEOUT_MS.into());
-        let response = embassy_time::with_timeout(timeout, self.wait_response())
-            .await
-            .map_err(|_| Error::Timeout)??;
-
-        if !Cmd::EXPECTS_PROMPT || !matches!(&response, Response::Prompt(_)) {
-            return cmd.parse((&response).into());
-        }
-
-        with_timeout(self.config.tx_timeout, self.rw.write_all(cmd.payload()))
+    async fn send_payload(&mut self, payload: &[u8]) -> Result<(), Error> {
+        with_timeout(self.config.tx_timeout, self.rw.write_all(payload))
             .await
             .map_err(|_| Error::Timeout)?
             .map_err(|_| Error::Write)?;
@@ -169,11 +152,39 @@ impl<RW: Read + Write, D: Digester> AtatClient for SimpleClient<'_, RW, D> {
             .map_err(|_| Error::Write)?;
 
         self.start_cooldown_timer();
+        Ok(())
+    }
 
-        let response = embassy_time::with_timeout(timeout, self.wait_response())
+    async fn send_inner(
+        &mut self,
+        len: usize,
+        spec: AtatCmdSpec<'_>,
+    ) -> Result<Response<256>, Error> {
+        self.send_request(len).await?;
+        if !spec.expects_response_code {
+            return Ok(Response::default());
+        }
+
+        let response = embassy_time::with_timeout(spec.timeout, self.wait_response())
             .await
             .map_err(|_| Error::Timeout)??;
 
+        if !spec.expects_prompt || !matches!(&response, Response::Prompt(_)) {
+            return Ok(response);
+        }
+
+        self.send_payload(spec.payload).await?;
+
+        embassy_time::with_timeout(spec.timeout, self.wait_response())
+            .await
+            .map_err(|_| Error::Timeout)?
+    }
+}
+
+impl<RW: Read + Write, D: Digester> AtatClient for SimpleClient<'_, RW, D> {
+    async fn send<Cmd: AtatCmd>(&mut self, cmd: &Cmd) -> Result<Cmd::Response, Error> {
+        let len = cmd.write(self.buf);
+        let response = self.send_inner(len, cmd.into()).await?;
         cmd.parse((&response).into())
     }
 }

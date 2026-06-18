@@ -1,16 +1,15 @@
-use super::AtatClient;
+use super::{AtatClient, AtatCmdSpec};
 use crate::{
-    AtatCmd, Config, Error, Response,
     helpers::LossyStr,
     response_slot::{ResponseSlot, ResponseSlotGuard},
+    AtatCmd, Config, Error, Response,
 };
-use embassy_time::{Duration, Instant, TimeoutError, Timer, with_timeout};
+use embassy_time::{with_timeout, Duration, Instant, TimeoutError, Timer};
 use embedded_io::ErrorType;
 use embedded_io_async::Write;
 use futures::{
-    Future,
-    future::{Either, select},
-    pin_mut,
+    future::{select, Either},
+    pin_mut, Future,
 };
 
 pub struct Client<'a, W: Write, const INGRESS_BUF_SIZE: usize> {
@@ -116,28 +115,9 @@ impl<'a, W: Write, const INGRESS_BUF_SIZE: usize> Client<'a, W, INGRESS_BUF_SIZE
             cooldown.await
         }
     }
-}
 
-impl<W: Write, const INGRESS_BUF_SIZE: usize> AtatClient for Client<'_, W, INGRESS_BUF_SIZE> {
-    async fn send<Cmd: AtatCmd>(&mut self, cmd: &Cmd) -> Result<Cmd::Response, Error> {
-        let len = cmd.write(self.buf);
-        self.send_request(len).await?;
-        if !Cmd::EXPECTS_RESPONSE_CODE {
-            return cmd.parse(Ok(&[]));
-        }
-        let timeout = Duration::from_millis(Cmd::MAX_TIMEOUT_MS.into());
-        {
-            let response = self.wait_response(timeout).await?;
-            let response: &Response<INGRESS_BUF_SIZE> = &response.borrow();
-
-            if !Cmd::EXPECTS_PROMPT || !matches!(response, Response::Prompt(_)) {
-                return cmd.parse((response).into());
-            }
-        }
-
-        self.res_slot.reset();
-
-        with_timeout(self.config.tx_timeout, self.writer.write_all(cmd.payload()))
+    async fn send_payload(&mut self, payload: &[u8]) -> Result<(), Error> {
+        with_timeout(self.config.tx_timeout, self.writer.write_all(payload))
             .await
             .map_err(|_| Error::Timeout)?
             .map_err(|_| Error::Write)?;
@@ -148,10 +128,42 @@ impl<W: Write, const INGRESS_BUF_SIZE: usize> AtatClient for Client<'_, W, INGRE
             .map_err(|_| Error::Write)?;
 
         self.start_cooldown_timer();
+        Ok(())
+    }
 
-        let response = self.wait_response(timeout).await?;
+    async fn send_inner(
+        &mut self,
+        len: usize,
+        spec: AtatCmdSpec<'_>,
+    ) -> Result<Response<INGRESS_BUF_SIZE>, Error> {
+        self.send_request(len).await?;
+        if !spec.expects_response_code {
+            return Ok(Response::default());
+        }
+
+        {
+            let response = self.wait_response(spec.timeout).await?;
+            let response: &Response<INGRESS_BUF_SIZE> = &response.borrow();
+
+            if !spec.expects_prompt || !matches!(response, Response::Prompt(_)) {
+                return Ok(response.clone());
+            }
+        }
+
+        self.res_slot.reset();
+        self.send_payload(spec.payload).await?;
+
+        let response = self.wait_response(spec.timeout).await?;
         let response: &Response<INGRESS_BUF_SIZE> = &response.borrow();
-        cmd.parse(response.into())
+        Ok(response.clone())
+    }
+}
+
+impl<W: Write, const INGRESS_BUF_SIZE: usize> AtatClient for Client<'_, W, INGRESS_BUF_SIZE> {
+    async fn send<Cmd: AtatCmd>(&mut self, cmd: &Cmd) -> Result<Cmd::Response, Error> {
+        let len = cmd.write(self.buf);
+        let response = self.send_inner(len, cmd.into()).await?;
+        cmd.parse((&response).into())
     }
 }
 
@@ -159,9 +171,9 @@ impl<W: Write, const INGRESS_BUF_SIZE: usize> AtatClient for Client<'_, W, INGRE
 mod tests {
     use super::*;
     use crate as atat;
+    use crate::atat_derive::{AtatCmd, AtatEnum, AtatResp};
     use crate::Error;
     use crate::InternalError;
-    use crate::atat_derive::{AtatCmd, AtatEnum, AtatResp};
     use core::sync::atomic::{AtomicU64, Ordering};
     use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
     use embassy_sync::pubsub::PubSubChannel;
