@@ -730,12 +730,6 @@ impl fmt::Display for Error {
     }
 }
 
-fn trim_start_ascii_whitespace(x: &[u8]) -> &[u8] {
-    x.iter()
-        .position(|x| !x.is_ascii_whitespace())
-        .map_or_else(|| &x[0..0], |from| &x[from..])
-}
-
 /// Deserializes an instance of type `T` from bytes of AT Response text
 pub fn from_slice<'a, T>(v: &'a [u8]) -> Result<T>
 where
@@ -745,7 +739,7 @@ where
     where
         T: de::Deserialize<'a>,
     {
-        let mut de = Deserializer::new(trim_start_ascii_whitespace(v));
+        let mut de = Deserializer::new(v.trim_ascii_start());
         let value = de::Deserialize::deserialize(&mut de)?;
         de.end()?;
         Ok(value)
