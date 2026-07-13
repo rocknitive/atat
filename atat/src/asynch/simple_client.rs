@@ -1,7 +1,12 @@
 use super::{AtatClient, AtatCmdSpec};
-use crate::{helpers::LossyStr, AtatCmd, Config, DigestResult, Digester, Error, Response};
+use crate::{helpers::LossyStr, AtatCmd, Config, DigestResult, Digester, Error, InternalError};
 use embassy_time::{with_timeout, Timer};
 use embedded_io_async::{Read, Write};
+
+enum SimpleResponse<'a> {
+    Prompt,
+    Response(Result<&'a [u8], InternalError<'a>>),
+}
 
 pub struct SimpleClient<'a, RW: Read + Write, D: Digester> {
     rw: RW,
@@ -53,81 +58,56 @@ impl<'a, RW: Read + Write, D: Digester> SimpleClient<'a, RW, D> {
         Ok(())
     }
 
-    async fn wait_response(&mut self) -> Result<Response<256>, Error> {
-        loop {
-            match self.rw.read(&mut self.buf[self.pos..]).await {
-                Ok(n) => {
-                    self.pos += n;
-                }
-                _ => return Err(Error::Read),
-            };
+    async fn read_response_chunk(&mut self) -> Result<(), Error> {
+        self.pos += self
+            .rw
+            .read(&mut self.buf[self.pos..])
+            .await
+            .or(Err(Error::Read))?;
 
-            trace!(
-                "Buffer contents: ({:?} bytes) '{:?}'",
+        trace!(
+            "Buffer contents: ({:?} bytes) '{:?}'",
+            self.pos,
+            LossyStr(&self.buf[..self.pos])
+        );
+
+        Ok(())
+    }
+
+    fn digest(&mut self) -> (Option<SimpleResponse<'_>>, usize) {
+        let (result, swallowed) = self.digester.digest(&self.buf[..self.pos]);
+        match &result {
+            DigestResult::None if swallowed > 0 => debug!(
+                "Received echo or whitespace ({}/{}): {:?}",
+                swallowed,
                 self.pos,
-                LossyStr(&self.buf[..self.pos])
-            );
-
-            while self.pos > 0 {
-                let (res, swallowed) = match self.digester.digest(&self.buf[..self.pos]) {
-                    (DigestResult::None, swallowed) => {
-                        if swallowed > 0 {
-                            debug!(
-                                "Received echo or whitespace ({}/{}): {:?}",
-                                swallowed,
-                                self.pos,
-                                LossyStr(&self.buf[..swallowed])
-                            );
-                        }
-                        (None, swallowed)
-                    }
-                    (DigestResult::Urc(urc_line), swallowed) => {
-                        warn!("Unable to handle URC! Ignoring: {:?}", LossyStr(urc_line));
-                        (None, swallowed)
-                    }
-                    (DigestResult::Prompt(prompt), swallowed) => {
-                        debug!("Received prompt ({}/{})", swallowed, self.pos);
-
-                        (Some(Response::Prompt(prompt)), swallowed)
-                    }
-                    (DigestResult::Response(resp), swallowed) => {
-                        match &resp {
-                            Ok(r) => {
-                                if r.is_empty() {
-                                    debug!("Received OK ({}/{})", swallowed, self.pos)
-                                } else {
-                                    debug!(
-                                        "Received response ({}/{}): {:?}",
-                                        swallowed,
-                                        self.pos,
-                                        LossyStr(r)
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "Received error response ({}/{}): {:?}",
-                                    swallowed, self.pos, e
-                                );
-                            }
-                        }
-
-                        (Some(resp.into()), swallowed)
-                    }
-                };
-
-                if swallowed == 0 {
-                    embassy_futures::yield_now().await;
-                    break;
-                }
-
-                self.consume(swallowed);
-
-                if let Some(resp) = res {
-                    return Ok(resp);
-                }
+                LossyStr(&self.buf[..swallowed])
+            ),
+            DigestResult::None => {}
+            DigestResult::Urc(urc_line) => {
+                warn!("Unable to handle URC! Ignoring: {:?}", LossyStr(urc_line))
             }
+            DigestResult::Prompt(_) => {
+                debug!("Received prompt ({}/{})", swallowed, self.pos);
+            }
+            DigestResult::Response(Ok([])) => debug!("Received OK ({}/{})", swallowed, self.pos),
+            DigestResult::Response(Ok(r)) => debug!(
+                "Received response ({}/{}): {:?}",
+                swallowed,
+                self.pos,
+                LossyStr(r)
+            ),
+            DigestResult::Response(Err(e)) => warn!(
+                "Received error response ({}/{}): {:?}",
+                swallowed, self.pos, e
+            ),
         }
+        let result = match result {
+            DigestResult::Prompt(_) => Some(SimpleResponse::Prompt),
+            DigestResult::Response(resp) => Some(SimpleResponse::Response(resp)),
+            _ => None,
+        };
+        (result, swallowed)
     }
 
     fn consume(&mut self, amt: usize) {
@@ -159,37 +139,44 @@ impl<'a, RW: Read + Write, D: Digester> SimpleClient<'a, RW, D> {
         self.start_cooldown_timer();
         Ok(())
     }
-
-    async fn send_inner(
-        &mut self,
-        len: usize,
-        spec: AtatCmdSpec<'_>,
-    ) -> Result<Response<256>, Error> {
-        self.send_request(len).await?;
-        if !spec.expects_response_code {
-            return Ok(Response::default());
-        }
-
-        let response = embassy_time::with_timeout(spec.timeout, self.wait_response())
-            .await
-            .map_err(|_| Error::Timeout)??;
-
-        if !spec.expects_prompt || !matches!(&response, Response::Prompt(_)) {
-            return Ok(response);
-        }
-
-        self.send_payload(spec.payload).await?;
-
-        embassy_time::with_timeout(spec.timeout, self.wait_response())
-            .await
-            .map_err(|_| Error::Timeout)?
-    }
 }
 
 impl<RW: Read + Write, D: Digester> AtatClient for SimpleClient<'_, RW, D> {
     async fn send<Cmd: AtatCmd>(&mut self, cmd: &Cmd) -> Result<Cmd::Response, Error> {
         let len = cmd.write(self.buf);
-        let response = self.send_inner(len, cmd.into()).await?;
-        cmd.parse((&response).into())
+
+        let spec: AtatCmdSpec<'_> = cmd.into();
+
+        self.send_request(len).await?;
+        if !spec.expects_response_code {
+            return cmd.parse(Ok(&[]));
+        }
+
+        self.pos = 0;
+        let mut payload_sent = false;
+
+        embassy_time::with_timeout(spec.timeout, async {
+            loop {
+                self.read_response_chunk().await?;
+                while self.pos > 0 {
+                    match self.digest() {
+                        (Some(SimpleResponse::Prompt), swallowed)
+                            if spec.expects_prompt && !payload_sent =>
+                        {
+                            self.consume(swallowed);
+                            self.send_payload(spec.payload).await?;
+                            payload_sent = true;
+                        }
+                        (Some(SimpleResponse::Prompt), _) => return cmd.parse(Ok(&[])),
+                        (Some(SimpleResponse::Response(resp)), _) => return cmd.parse(resp),
+                        (_, 0) => break,
+                        (_, swallowed) => self.consume(swallowed),
+                    }
+                }
+                embassy_futures::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| Error::Timeout)?
     }
 }
